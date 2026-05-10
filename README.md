@@ -14,7 +14,7 @@
 ## Install in 30 seconds
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/auto-claude.git
+git clone https://github.com/Mohamedattiadev/auto-claude.git
 cd auto-claude
 python3 install.py
 ```
