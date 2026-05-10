@@ -12,7 +12,19 @@
 
 ---
 
-## Install in 30 seconds
+## Install
+
+### Option A — pip (recommended)
+
+```bash
+pip install git+https://github.com/Mohamedattiadev/auto-claude.git
+```
+
+This drops `auto` and `auto-claude` on your PATH. Done.
+
+> **Windows?** Add the wexpect extra: `pip install "auto-claude[windows] @ git+https://github.com/Mohamedattiadev/auto-claude.git"`
+
+### Option B — bespoke installer (no pip)
 
 ```bash
 git clone https://github.com/Mohamedattiadev/auto-claude.git
@@ -21,8 +33,6 @@ python3 install.py
 ```
 
 Restart your terminal. Done.
-
-> **Windows?** Run `python install.py` in CMD or PowerShell. If prompted, install the one dependency: `pip install wexpect`
 
 ---
 
@@ -175,9 +185,22 @@ It scans the installed `claude` binary for prompt-shaped strings, normalizes the
 
 ---
 
+## Version
+
+```bash
+auto --version
+# auto 0.3.0
+```
+
+---
+
 ## Uninstall
 
 ```bash
+# pip install
+pip uninstall auto-claude
+
+# bespoke installer
 python3 install.py --uninstall
 ```
 
@@ -322,9 +345,16 @@ Runs on **any OS** — no PTY required.
 # Cross-platform unit tests (Linux / macOS / Windows — no PTY needed)
 python3 tests/test_cross_platform.py
 
-# Full PTY integration tests (Linux / macOS)
-python3 claude_auto.py tests/mock_claude_comprehensive.py
+# Real-PTY integration tests (Linux / macOS) — exercises the full run
+# loop end-to-end: quiescence settle, signature throttle, ANSI strip,
+# --dry-run and --skip-trigger flags.
+python3 tests/test_pty_integration.py
+
+# Drift detection — diff installed `claude` binary against trigger list.
+python3 scripts/sync-triggers.py
 ```
+
+CI runs the cross-platform suite on Linux / macOS / Windows × Python 3.8 / 3.11 / 3.13, and the PTY integration suite on Linux / macOS. Every push and PR is verified.
 
 ---
 
@@ -332,16 +362,19 @@ python3 claude_auto.py tests/mock_claude_comprehensive.py
 
 ```
 auto-claude/
-├── claude_auto.py          # Main script — the auto-clicker engine
-├── install.py              # Universal installer (Linux / macOS / Windows)
+├── claude_auto.py          # Main module — the auto-clicker engine
+├── pyproject.toml          # pip install / build metadata
+├── install.py              # Bespoke installer (pip-free alternative)
 ├── README.md
 ├── .github/workflows/
-│   └── test.yml            # CI: tests on Linux/macOS/Windows × Python 3.8/3.11/3.13
+│   └── test.yml            # CI: Linux/macOS/Windows × Python 3.8/3.11/3.13
 ├── scripts/
 │   └── sync-triggers.py    # Diff installed claude binary against trigger list
 └── tests/
     ├── test_cross_platform.py        # 89 unit tests — runs on any OS
-    ├── mock_claude_comprehensive.py  # 55 PTY integration tests
+    ├── test_pty_integration.py       # 9 real-PTY end-to-end tests (POSIX)
+    ├── _mock_target.py               # Helper used by integration tests
+    ├── mock_claude_comprehensive.py  # Legacy interactive PTY harness
     └── mock_claude.py                # Simple mock for manual testing
 ```
 

@@ -21,3 +21,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Run cross-platform unit tests
         run: python tests/test_cross_platform.py
+      - name: Run PTY integration tests (POSIX only)
+        if: runner.os != 'Windows'
+        run: python tests/test_pty_integration.py
+      - name: Verify package builds (sdist + wheel)
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Verify --version works
+        run: python claude_auto.py --version

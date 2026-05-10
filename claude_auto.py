@@ -5,6 +5,8 @@ import time
 import re
 import codecs
 
+__version__ = "0.3.0"
+
 # Universal triggers — spaces are stripped from buffer to defeat CLI cursor-jump formatting.
 #
 # Detection is TAIL-ANCHORED: only the last TAIL_WINDOW chars of the rolling
@@ -477,6 +479,7 @@ Auto-flags (must come BEFORE the wrapped command):
                           without taking action.
   --fake-os=PLATFORM      Force the platform branch (win32/darwin/linux),
                           for testing.
+  -V, --version           Show version and exit.
   -h, --help              Show this message.
 
 Examples:
@@ -497,6 +500,9 @@ def _parse_args(argv):
         flag = args[0]
         if flag in ("--help", "-h"):
             print(USAGE)
+            sys.exit(0)
+        if flag in ("--version", "-V"):
+            print(f"auto {__version__}")
             sys.exit(0)
         if flag == "--skip-trigger":
             if len(args) < 2:

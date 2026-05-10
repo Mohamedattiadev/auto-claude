@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-claude"
+version = "0.3.0"
+description = "Claude Code permission auto-clicker — never press Yes again"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Mohamed Attia"}]
+keywords = ["claude", "claude-code", "cli", "automation", "auto-clicker", "pty"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+windows = ["wexpect>=4"]
+
+[project.scripts]
+auto = "claude_auto:main"
+auto-claude = "claude_auto:main"
+
+[project.urls]
+Homepage = "https://github.com/Mohamedattiadev/auto-claude"
+Issues = "https://github.com/Mohamedattiadev/auto-claude/issues"
+
+[tool.setuptools]
+py-modules = ["claude_auto"]
