@@ -6,7 +6,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green)
-![Tests](https://img.shields.io/badge/tests-55%2F55%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-63%2F63%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
@@ -98,9 +98,28 @@ Approve? [y/N]
 | `(y/n)` parens | `Continue? (y/n)` | Types `y` |
 | `Allow?` plain | `Allow?` | Types `y` |
 | `Do you want to...` menu | `❯ 1. Yes` | Presses Enter |
+| `Do you want to make this edit?` | `❯ 1. Yes` | Presses Enter |
+| `Do you trust the files in this folder?` | `❯ 1. Yes, proceed` | Presses Enter |
 | `Press Enter to continue` | — | Presses Enter |
 
 Prompts are detected even if they arrive split across multiple data chunks (a real edge case in PTY streams).
+
+### False-positive guards
+
+`auto` ignores trigger-shaped text that isn't an actual prompt:
+
+- **Tail-anchored matching** — only the last ~600 chars of the screen are scanned, so phrases that scrolled out (or appeared in earlier prose / code blocks) won't re-fire.
+- **Menu indicator gate** — `Do you want to…` only fires Enter when the rendered menu (`1. Yes`) is also on screen, so prose like *"Do you want to know more"* is ignored.
+- **Extended ANSI stripping** — OSC (terminal title), DCS, APC, PM and SOS sequences are stripped alongside CSI, so a window-title update containing trigger text can't fire a key.
+- **Stateful UTF-8 decoding** — multi-byte characters split across PTY reads survive intact instead of getting silently dropped.
+- **Boundary-safe buffer trim** — the rolling raw buffer is trimmed at newline boundaries, never mid-escape, so no orphan `[1C` literals can leak into the matcher.
+
+### Robustness
+
+- **Non-TTY stdin** (piped input, `nohup`, systemd, CI) — `auto` becomes transparent and execs the target command directly instead of crashing in `termios.tcgetattr`.
+- **PTY fork / exec failures** print a clear `auto: …` error instead of leaving the terminal in raw mode.
+- **`SIGWINCH` during `select`** is retried instead of bubbling up as `InterruptedError`.
+- **Debug log** lives at `~/.cache/claude_auto/claude_auto.log` (mode `0600`, `O_NOFOLLOW`) instead of a world-readable path in `/tmp`.
 
 ---
 
@@ -125,7 +144,7 @@ python3 install.py --uninstall
 
 ## Test results
 
-The project ships with a 55-test suite covering every known prompt variant.
+The project ships with a 63-test suite covering every known prompt variant plus regression tests for false-positive guards.
 
 ### Cross-platform unit tests (`tests/test_cross_platform.py`)
 Runs on **any OS** — no PTY required.
@@ -206,6 +225,16 @@ Runs on **any OS** — no PTY required.
 [PASS] 46 partial word 'allow'
 [PASS] 47 number 1 in text
 [PASS] 48 word 'yes' in sentence
+[PASS] 48a prose 'Do you want to know'
+[PASS] 48b old trigger out of tail
+[PASS] 48c markdown example no menu
+
+── Real-World Prompts (from Claude Code GitHub issues) ──
+[PASS] R1 'Do you want to make this edit to <file>?'
+[PASS] R2 'Do you trust the files in this folder?'
+[PASS] R3 'Yes, during this session' menu
+[PASS] R4 'Yes, allow reading from' menu
+[PASS] R5 trust phrase in prose, no menu
 
 ── Edge Cases — Split Buffers (Accumulated) ──
 [PASS] 49 Prompt split across two chunks
@@ -219,8 +248,9 @@ Runs on **any OS** — no PTY required.
 [PASS] 55 rapid (y/N)
 
 ============================================================
- RESULTS ON Linux (linux): 55/55 PASSED
- ✓ ALL 55 TESTS PASSED — 100% cross-platform ready!
+ RESULTS ON Linux (linux): 63/63 PASSED
+ (sourced from anthropics/claude-code issues #12367, #3366, #6797, #2147)
+ ✓ ALL 63 TESTS PASSED — 100% cross-platform ready!
 ============================================================
 ```
 
@@ -244,7 +274,7 @@ auto-claude/
 ├── install.py              # Universal installer (Linux / macOS / Windows)
 ├── README.md
 └── tests/
-    ├── test_cross_platform.py        # 55 unit tests — runs on any OS
+    ├── test_cross_platform.py        # 63 unit tests — runs on any OS
     ├── mock_claude_comprehensive.py  # 55 PTY integration tests
     └── mock_claude.py                # Simple mock for manual testing
 ```

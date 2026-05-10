@@ -154,6 +154,17 @@ def run_tests():
     check("46 partial word 'allow'",    "This will allow faster execution", "none")
     check("47 number 1 in text",        "Step 1. Configure the settings",   "none")
     check("48 word 'yes' in sentence",  "Yes, I understand your request",   "none")
+    # Claude's own prose contains the phrase, no menu rendered → must NOT fire
+    check("48a prose 'Do you want to know'",
+          "Sometimes I'll ask: Do you want to know more about how X works?",
+          "none")
+    # Trigger phrase scrolled out of the input region (>TAIL_WINDOW from end)
+    far_past = "Do you want to proceed?\r\n" + ("filler line\r\n" * 80)
+    check("48b old trigger out of tail", far_past, "none")
+    # Markdown showing a prompt example without the rendered menu indicator
+    check("48c markdown example no menu",
+          "Example: `Do you want to proceed?` — that question shows up often.",
+          "none")
 
     section("Edge Cases — Split Buffers (Accumulated)")
     # Simulating what happens when text comes in two chunks
@@ -178,6 +189,27 @@ def run_tests():
     print(f"{status} 50 [y/N] split across two chunks")
     if ok: PASS += 1
     else:  FAIL += 1
+
+    section("Real-World Prompts (from Claude Code GitHub issues)")
+    # Issue #12367 — repetitive edit prompt
+    check("R1 'Do you want to make this edit to <file>?'",
+          "Do\x1b[1Cyou\x1b[1Cwant\x1b[1Cto\x1b[1Cmake\x1b[1Cthis\x1b[1Cedit\x1b[1Cto\x1b[1Cindex.html?\r\n❯\x1b[1C1.\x1b[1CYes\r\n2.\x1b[1CYes,allow\x1b[1Call\x1b[1Cedits\x1b[1Cduring\x1b[1Cthis\x1b[1Csession\x1b[1C(shift+tab)\r\n3.\x1b[1CNo",
+          "enter")
+    # Issues #3366, #6797 — workspace trust prompt
+    check("R2 'Do you trust the files in this folder?'",
+          "Do you trust the files in this folder?\r\n❯ 1. Yes, proceed\r\n  2. No, exit",
+          "enter")
+    # Real Claude session option strings — first option always '1. Yes...'
+    check("R3 'Yes, during this session' menu",
+          "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, during this session\r\n  3. No, and tell Claude what to do differently (esc)",
+          "enter")
+    check("R4 'Yes, allow reading from' menu",
+          "Bash command ls\r\nDo you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, allow reading from Links/ from this project\r\n  3. No, and tell Claude what to do differently (esc)",
+          "enter")
+    # Trust prompt phrase only — NO menu rendered → must NOT fire
+    check("R5 trust phrase in prose, no menu",
+          "The docs ask: Do you trust the files in this folder? — but only on first launch.",
+          "none")
 
     section("Stress: Rapid Unique Prompts")
     rapid = [
