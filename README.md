@@ -7,7 +7,7 @@
 ![CI](https://github.com/Mohamedattiadev/auto-claude/actions/workflows/test.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green)
-![Tests](https://img.shields.io/badge/tests-89%2F89%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-143%2F143%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
@@ -208,7 +208,7 @@ python3 install.py --uninstall
 
 ## Test results
 
-The project ships with a 89-test suite covering every known prompt variant plus regression tests for false-positive guards.
+The project ships with a 143-test suite — 89 cross-platform prompt-detection tests, 45 internal-helper tests (ANSI strip, UTF-8 split, raw-buffer trim, arg parsing, signature, tail window), and 9 real-PTY integration tests.
 
 ### Cross-platform unit tests (`tests/test_cross_platform.py`)
 Runs on **any OS** — no PTY required.
@@ -344,6 +344,10 @@ Runs on **any OS** — no PTY required.
 ```bash
 # Cross-platform unit tests (Linux / macOS / Windows — no PTY needed)
 python3 tests/test_cross_platform.py
+
+# Internal-helper tests — ANSI strip, UTF-8 incremental decode,
+# raw-buffer trim, arg parsing, fire signature, tail window.
+python3 tests/test_internals.py
 
 # Real-PTY integration tests (Linux / macOS) — exercises the full run
 # loop end-to-end: quiescence settle, signature throttle, ANSI strip,

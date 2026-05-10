@@ -496,7 +496,7 @@ def _parse_args(argv):
     dry_run = False
     platform = sys.platform
     args = list(argv)
-    while args and args[0].startswith("--"):
+    while args and (args[0].startswith("--") or args[0] in ("-h", "-V")):
         flag = args[0]
         if flag in ("--help", "-h"):
             print(USAGE)

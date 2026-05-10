@@ -21,6 +21,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Run cross-platform unit tests
         run: python tests/test_cross_platform.py
+      - name: Run internal-helper tests
+        run: python tests/test_internals.py
       - name: Run PTY integration tests (POSIX only)
         if: runner.os != 'Windows'
         run: python tests/test_pty_integration.py
