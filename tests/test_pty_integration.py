@@ -179,6 +179,105 @@ class TestPtyIntegration(unittest.TestCase):
         self.assertIn("auto ", out)
         self.assertRegex(out, r"\d+\.\d+\.\d+")
 
+    def test_short_version_flag(self):
+        out = subprocess.check_output(
+            [sys.executable, AUTO, "-V"], text=True, timeout=5,
+        )
+        self.assertRegex(out, r"\d+\.\d+\.\d+")
+
+    def test_short_help_flag(self):
+        out = subprocess.check_output(
+            [sys.executable, AUTO, "-h"], text=True, timeout=5,
+        )
+        self.assertIn("Usage", out)
+
+    def test_help_flag(self):
+        out = subprocess.check_output(
+            [sys.executable, AUTO, "--help"], text=True, timeout=5,
+        )
+        self.assertIn("Usage", out)
+        self.assertIn("--skip-trigger", out)
+
+    def test_no_command_exits_nonzero(self):
+        rc = subprocess.call(
+            [sys.executable, AUTO], timeout=5,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.assertNotEqual(rc, 0)
+
+    def test_unknown_skip_trigger_silent(self):
+        # Skipping a phrase that isn't a real trigger should not break
+        # anything — actual prompt still fires.
+        result, rc = run_auto_session(
+            [{"prompt": "Continue? [y/N]"}],
+            extra_auto_args=["--skip-trigger", "ThisDoesNotExist"],
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("y", result[0])
+
+    def test_ansi_colored_prompt_fires(self):
+        # Real claude prompts come wrapped in SGR color codes.
+        result, rc = run_auto_session([
+            {"prompt": "\x1b[33mContinue?\x1b[0m \x1b[1m[y/N]\x1b[0m"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertIn("y", result[0])
+
+    def test_terminal_title_does_not_false_fire(self):
+        # OSC 0 ; title BEL — sets terminal title. Must be stripped.
+        result, rc = run_auto_session([
+            {"prompt": "\x1b]0;Do you want to proceed?\x07just status text"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "")
+
+    def test_unicode_box_drawing_in_prompt(self):
+        # Real menus use ❯ (U+276F) — ensure UTF-8 doesn't break detection.
+        result, rc = run_auto_session([
+            {"prompt": "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertTrue("\r" in result[0] or "\n" in result[0])
+
+    def test_three_distinct_prompts_all_fire(self):
+        result, rc = run_auto_session([
+            {"prompt": "First? [y/N]"},
+            {"prompt": "Second? (Y/n)"},
+            {"prompt": "Third? Allow?"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+        for r in result:
+            self.assertIn("y", r)
+
+    def test_press_enter_then_yn_fires_both(self):
+        result, rc = run_auto_session([
+            {"prompt": "Press Enter to continue"},
+            {"prompt": "Then? [y/N]"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        # First: bare \r (no y).
+        self.assertNotIn("y", result[0])
+        self.assertTrue("\r" in result[0] or "\n" in result[0])
+        # Second: y.
+        self.assertIn("y", result[1])
+
+    def test_destructive_exit_plan_does_not_fire(self):
+        result, rc = run_auto_session([
+            {"prompt": "Exit plan mode?\r\n❯ 1. Yes\r\n  2. No"},
+        ])
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "")
+
+    def test_dry_run_with_menu(self):
+        result, rc = run_auto_session(
+            [{"prompt": "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No"}],
+            extra_auto_args=["--dry-run"],
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "")
+
 
 if __name__ == "__main__":
     if not POSIX:

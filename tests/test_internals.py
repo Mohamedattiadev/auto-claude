@@ -6,8 +6,12 @@ import codecs
 import contextlib
 import io
 import os
+import random
+import stat
 import sys
+import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +25,7 @@ from claude_auto import (
     THROTTLE_SIG_LEN,
     _build_opts,
     _fire_signature,
+    _open_log,
     _parse_args,
     _trim_raw_buffer,
     process_buffer,
@@ -280,6 +285,226 @@ class TestNoFalseFire(unittest.TestCase):
         buf = strip("Exit plan mode?\r\n❯ 1. Yes\r\n  2. No")
         _, trig, _ = process_buffer(buf, None)
         self.assertFalse(trig)
+
+
+class TestOpenLog(unittest.TestCase):
+    """_open_log — secure log creation in XDG cache dir."""
+
+    def test_creates_log_with_mode_0600(self):
+        with tempfile.TemporaryDirectory() as td:
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}):
+                f = _open_log()
+                try:
+                    self.assertIsNotNone(f)
+                    log_path = os.path.join(td, "claude_auto", "claude_auto.log")
+                    self.assertTrue(os.path.exists(log_path))
+                    if os.name == "posix":
+                        mode = stat.S_IMODE(os.stat(log_path).st_mode)
+                        self.assertEqual(mode, 0o600)
+                finally:
+                    if f:
+                        f.close()
+
+    def test_returns_none_when_dir_unwritable(self):
+        # Point XDG_CACHE_HOME at a path that can't be created (a regular file).
+        with tempfile.NamedTemporaryFile() as nf:
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": nf.name}):
+                f = _open_log()
+                self.assertIsNone(f)
+
+    def test_truncates_existing_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache = os.path.join(td, "claude_auto")
+            os.makedirs(cache)
+            log_path = os.path.join(cache, "claude_auto.log")
+            with open(log_path, "w") as preset:
+                preset.write("OLD CONTENT\n")
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}):
+                f = _open_log()
+                try:
+                    self.assertIsNotNone(f)
+                    f.write("new\n")
+                    f.flush()
+                    with open(log_path) as r:
+                        content = r.read()
+                    self.assertEqual(content, "new\n")
+                finally:
+                    if f:
+                        f.close()
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and os.name == "posix",
+                         "O_NOFOLLOW POSIX only")
+    def test_refuses_symlink_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache = os.path.join(td, "claude_auto")
+            os.makedirs(cache)
+            log_path = os.path.join(cache, "claude_auto.log")
+            sink = os.path.join(td, "elsewhere")
+            with open(sink, "w"):
+                pass
+            os.symlink(sink, log_path)
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": td}):
+                f = _open_log()
+                # O_NOFOLLOW makes symlink open fail → returns None.
+                self.assertIsNone(f)
+
+
+class TestProcessBufferFuzz(unittest.TestCase):
+    """Random garbage must never crash process_buffer."""
+
+    def test_random_bytes_no_crash(self):
+        rng = random.Random(0xC0FFEE)
+        for _ in range(500):
+            n = rng.randint(0, 2000)
+            blob = bytes(rng.randint(0, 255) for _ in range(n))
+            text = blob.decode("utf-8", errors="replace")
+            cleaned = ANSI_ESCAPE.sub("", text).replace(" ", "")
+            response, triggered, settle = process_buffer(cleaned, None)
+            self.assertIsInstance(triggered, bool)
+            if triggered:
+                self.assertIn(response, (b"y\r", b"\r"))
+            else:
+                self.assertIsNone(response)
+
+    def test_random_ansi_garbage_no_crash(self):
+        rng = random.Random(0xFEEDFACE)
+        for _ in range(200):
+            chunks = []
+            for _ in range(rng.randint(0, 30)):
+                chunks.append("\x1b[" + str(rng.randint(0, 99)) + "C")
+                chunks.append("".join(chr(rng.randint(32, 126))
+                                      for _ in range(rng.randint(0, 50))))
+            text = "".join(chunks)
+            cleaned = ANSI_ESCAPE.sub("", text).replace(" ", "")
+            process_buffer(cleaned, None)
+
+    def test_pathological_long_input(self):
+        # 1 MB of unrelated data — must complete fast and not fire.
+        big = "lorem ipsum dolor sit amet " * 40000
+        cleaned = ANSI_ESCAPE.sub("", big).replace(" ", "")
+        _, trig, _ = process_buffer(cleaned, None)
+        self.assertFalse(trig)
+
+
+class TestTrimRawBufferStability(unittest.TestCase):
+    """Repeated trims converge — buffer stays bounded under stress."""
+
+    def test_repeated_appends_stay_bounded(self):
+        buf = ""
+        for _ in range(200):
+            buf = _trim_raw_buffer(buf + ("x" * 500))
+            self.assertLessEqual(len(buf), 8192)
+
+    def test_trim_preserves_tail_content(self):
+        head = "h" * 10000
+        marker = "MARKER_AT_END\n"
+        out = _trim_raw_buffer(head + marker)
+        self.assertIn("MARKER_AT_END", out)
+
+
+class TestSkipTriggerCoverage(unittest.TestCase):
+    """--skip-trigger must work for every trigger category."""
+
+    def test_skip_y_trigger(self):
+        opts = _build_opts(["[y/N]"], False)
+        self.assertNotIn("[y/N]", opts["y_triggers"])
+        # Other variants still present.
+        self.assertIn("[Y/n]", opts["y_triggers"])
+
+    def test_skip_press_enter_trigger(self):
+        opts = _build_opts(["PressEntertocontinue"], False)
+        self.assertNotIn("PressEntertocontinue", opts["press_enter_triggers"])
+        self.assertIn("PressEntertotryagain", opts["press_enter_triggers"])
+
+    def test_skipping_y_trigger_silences_y_prompt(self):
+        opts = _build_opts(["[y/N]"], False)
+        buf = "Continue?[y/N]"
+        _, trig, _ = process_buffer(
+            buf, None,
+            y_triggers=opts["y_triggers"],
+        )
+        # Other y triggers absent → no fire.
+        self.assertFalse(trig)
+
+    def test_skipping_press_enter_silences_press_enter(self):
+        opts = _build_opts(["PressEntertocontinue"], False)
+        buf = "PressEntertocontinue"
+        _, trig, _ = process_buffer(
+            buf, None,
+            press_enter_triggers=opts["press_enter_triggers"],
+        )
+        self.assertFalse(trig)
+
+
+class TestTriggerListIntegrity(unittest.TestCase):
+    """Compile-time invariants on the trigger lists themselves."""
+
+    def test_no_empty_triggers(self):
+        for t in PROMPT_ENTER_TRIGGERS + PROMPT_Y_TRIGGERS + list(PRESS_ENTER_TRIGGERS):
+            self.assertTrue(t)
+            self.assertNotIn(" ", t, f"trigger {t!r} contains space — buffer is space-stripped")
+
+    def test_destructive_prompts_excluded(self):
+        excluded_substrings = ["Exitplanmode", "Stopultraplan", "Stopultrareview"]
+        for forbidden in excluded_substrings:
+            for t in PROMPT_ENTER_TRIGGERS:
+                self.assertNotIn(forbidden, t,
+                                 f"destructive prompt {forbidden!r} must not be auto-confirmed")
+
+    def test_triggers_are_unique(self):
+        self.assertEqual(len(PROMPT_ENTER_TRIGGERS), len(set(PROMPT_ENTER_TRIGGERS)))
+        self.assertEqual(len(PROMPT_Y_TRIGGERS), len(set(PROMPT_Y_TRIGGERS)))
+        self.assertEqual(len(PRESS_ENTER_TRIGGERS), len(set(PRESS_ENTER_TRIGGERS)))
+
+    def test_press_enter_is_immutable_tuple(self):
+        # Catches accidental list assignment that would make filtering at
+        # runtime mutate module state.
+        self.assertIsInstance(PRESS_ENTER_TRIGGERS, tuple)
+
+
+class TestAnsiBoundaryCases(unittest.TestCase):
+    def test_truncated_csi_at_end(self):
+        # Mid-sequence at buffer end — strip leaves residue. Documents
+        # current behavior so _trim_raw_buffer's newline-anchor matters.
+        s = "hello\x1b[1"
+        out = ANSI_ESCAPE.sub("", s)
+        # No matching final byte — partial sequence stays. Caller relies
+        # on _trim_raw_buffer + raw_buffer accumulation to repair next read.
+        self.assertEqual(out, "hello\x1b[1")
+
+    def test_complete_csi_with_intermediate_byte(self):
+        # CSI with intermediate byte ' ' (space) before final.
+        s = "x\x1b[1 qy"
+        self.assertEqual(ANSI_ESCAPE.sub("", s), "xy")
+
+    def test_nested_escapes(self):
+        s = "\x1b[31m\x1b[1mbold red\x1b[0m"
+        self.assertEqual(ANSI_ESCAPE.sub("", s), "bold red")
+
+    def test_carriage_return_preserved(self):
+        # \r is NOT an ANSI escape — must pass through (used by claude redraws).
+        self.assertEqual(ANSI_ESCAPE.sub("", "line1\rline2"), "line1\rline2")
+
+    def test_form_feed_preserved(self):
+        self.assertEqual(ANSI_ESCAPE.sub("", "a\fb"), "a\fb")
+
+
+class TestParseArgsExtra(unittest.TestCase):
+    def test_skip_trigger_with_double_space_normalized(self):
+        cmd, skips, _, _ = _parse_args(["--skip-trigger", "Allow ?  ", "claude"])
+        self.assertEqual(skips, ["Allow?"])
+
+    def test_fake_os_with_dry_run(self):
+        cmd, skips, dry, plat = _parse_args(["--fake-os=darwin", "--dry-run", "claude"])
+        self.assertEqual(plat, "darwin")
+        self.assertTrue(dry)
+        self.assertEqual(cmd, ["claude"])
+
+    def test_empty_argv(self):
+        cmd, skips, dry, plat = _parse_args([])
+        self.assertEqual(cmd, [])
+        self.assertEqual(skips, [])
+        self.assertFalse(dry)
 
 
 if __name__ == "__main__":
