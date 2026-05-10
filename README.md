@@ -4,6 +4,7 @@
 
 `auto` wraps any Claude CLI session and automatically accepts all permission prompts in the background — even while you're working on a completely different workspace.
 
+![CI](https://github.com/Mohamedattiadev/auto-claude/actions/workflows/test.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green)
 ![Tests](https://img.shields.io/badge/tests-82%2F82%20passed-brightgreen)
@@ -131,6 +132,17 @@ Prompts are detected even if they arrive split across multiple data chunks (a re
 - **PTY fork / exec failures** print a clear `auto: …` error instead of leaving the terminal in raw mode.
 - **`SIGWINCH` during `select`** is retried instead of bubbling up as `InterruptedError`.
 - **Debug log** lives at `~/.cache/claude_auto/claude_auto.log` (mode `0600`, `O_NOFOLLOW`) instead of a world-readable path in `/tmp`.
+- **Fire throttle** — identical responses within 500 ms are suppressed so a terminal redraw (window resize, scroll) re-rendering the same prompt cannot cause a double-keypress.
+
+### Keeping triggers fresh
+
+When Claude Code ships a new prompt string, our trigger list goes stale silently. Run the drift-detection script after each Claude release:
+
+```bash
+python3 scripts/sync-triggers.py
+```
+
+It scans the installed `claude` binary for prompt-shaped strings, normalizes them, and reports any that aren't matched by the current trigger list. Exit code is non-zero when new prompts are detected — perfect for hooking into CI.
 
 ---
 
@@ -305,6 +317,10 @@ auto-claude/
 ├── claude_auto.py          # Main script — the auto-clicker engine
 ├── install.py              # Universal installer (Linux / macOS / Windows)
 ├── README.md
+├── .github/workflows/
+│   └── test.yml            # CI: tests on Linux/macOS/Windows × Python 3.8/3.11/3.13
+├── scripts/
+│   └── sync-triggers.py    # Diff installed claude binary against trigger list
 └── tests/
     ├── test_cross_platform.py        # 82 unit tests — runs on any OS
     ├── mock_claude_comprehensive.py  # 55 PTY integration tests

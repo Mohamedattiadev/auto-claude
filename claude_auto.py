@@ -61,6 +61,11 @@ PROMPT_Y_TRIGGERS = [
 MENU_INDICATOR = "1.Yes"
 TAIL_WINDOW = 600
 
+# Minimum interval between two identical fires. Guards against terminal
+# redraws (resize, scroll) that re-render the same prompt within a few
+# milliseconds and would otherwise cause double-keypress.
+THROTTLE_INTERVAL_S = 0.5
+
 
 def process_buffer(buffer, log_file):
     """Checks the tail of the rolling text buffer.
@@ -206,6 +211,8 @@ def run_posix(command):
 
             decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
             raw_buffer = ""
+            last_fire_time = 0.0
+            last_fire_response = None
 
             while True:
                 try:
@@ -244,11 +251,24 @@ def run_posix(command):
 
                     response, triggered, settle = process_buffer(buffer, log_file)
                     if triggered:
+                        now = time.monotonic()
+                        if (response == last_fire_response and
+                                now - last_fire_time < THROTTLE_INTERVAL_S):
+                            # Same prompt re-rendered within the throttle
+                            # window — terminal redraw, not a real new prompt.
+                            if log_file:
+                                log_file.write("--- THROTTLED ---\n")
+                                log_file.flush()
+                            raw_buffer = ""
+                            buffer = ""
+                            continue
                         time.sleep(settle)
                         try:
                             os.write(fd, response)
                         except OSError:
                             break
+                        last_fire_time = time.monotonic()
+                        last_fire_response = response
                         raw_buffer = ""
                         buffer = ""
 
@@ -302,6 +322,8 @@ def run_windows(command):
     def read_output():
         decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         raw_buffer = ""
+        last_fire_time = 0.0
+        last_fire_response = None
         while True:
             try:
                 char = child.read_nonblocking(size=1, timeout=None)
@@ -318,8 +340,15 @@ def run_windows(command):
 
                 response, triggered, settle = process_buffer(buffer, None)
                 if triggered:
+                    now = time.monotonic()
+                    if (response == last_fire_response and
+                            now - last_fire_time < THROTTLE_INTERVAL_S):
+                        raw_buffer = ""
+                        continue
                     time.sleep(settle)
                     child.send(response.decode('utf-8'))
+                    last_fire_time = time.monotonic()
+                    last_fire_response = response
                     raw_buffer = ""
             except wexpect.EOF:
                 break
