@@ -358,7 +358,36 @@ python3 tests/test_pty_integration.py
 python3 scripts/sync-triggers.py
 ```
 
-CI runs the cross-platform suite on Linux / macOS / Windows × Python 3.8 / 3.11 / 3.13, and the PTY integration suite on Linux / macOS. Every push and PR is verified.
+CI runs the cross-platform suite **and** the internal-helper suite on Linux / macOS / Windows × Python 3.8 / 3.11 / 3.13, plus the PTY integration suite on Linux / macOS. Every push and PR is verified.
+
+### What the internal-helper suite covers
+
+70 tests asserting invariants that the prompt-detection suite can't see:
+
+- **ANSI escape stripping** — CSI, SGR colors, OSC (terminal title, hyperlinks with BEL or ST terminators), DCS, APC, single-char ESC, intermediate-byte sequences, nested escapes, plus `\r` / `\f` preservation.
+- **UTF-8 incremental decode** — multi-byte chars (2/3/4-byte sequences, `❯`, `é`, `🚀`) split across `read()` chunks reassemble cleanly.
+- **Raw-buffer trim** — short buffers untouched, oversized buffers cut at newline boundaries when possible (never mid-CSI), bounded under 200 stress appends.
+- **Tail window** — trigger inside `TAIL_WINDOW` fires; trigger that has scrolled past does not.
+- **Fire signature** — uses only the last `THROTTLE_SIG_LEN` chars, identical tails hash equal regardless of head, returns `int`, no crash on short buffers.
+- **Arg parsing** — multi `--skip-trigger`, `--fake-os=`, `--dry-run`, `--version` / `-V`, `--help` / `-h`, missing-arg exit code 2, command-flag passthrough, space normalization.
+- **`_open_log` security** — file mode `0o600`, `O_NOFOLLOW` refuses symlink targets, returns `None` on unwritable cache dir, truncates pre-existing logs.
+- **Trigger-list integrity** — no empty strings, no spaces (buffer is space-stripped before match), no duplicates, destructive prompts (`Exit plan mode?`, `Stop ultraplan?`, `Stop ultrareview?`) explicitly excluded, `PRESS_ENTER_TRIGGERS` stays a tuple.
+- **Fuzz** — 500 random-byte buffers + 200 random-ANSI buffers + 1 MB pathological input, `process_buffer` never crashes, never fires falsely, response shape always `None | b"y\r" | b"\r"`.
+
+### What the PTY integration suite covers
+
+21 tests driving the full run loop under a real `pty.fork`:
+
+- Y/N, menu, and Press-Enter prompts each fire correctly.
+- Two and three back-to-back distinct prompts all fire (signature throttle does not over-suppress).
+- `--dry-run` silences both Y/N and menu fires.
+- `--skip-trigger` silences a specific phrase; unknown skip-trigger doesn't break detection.
+- ANSI-colored real-claude prompts fire through the SGR wrapper.
+- Terminal title (OSC 0) containing trigger phrases does not false-fire.
+- Unicode menu indicator (`❯`) detected through UTF-8 boundaries.
+- `Exit plan mode?` regression — destructive prompt does NOT auto-fire.
+- `--version` / `-V` / `--help` / `-h` smoke-test exit cleanly with documented output.
+- No-command invocation exits non-zero with usage.
 
 ---
 
@@ -375,8 +404,9 @@ auto-claude/
 ├── scripts/
 │   └── sync-triggers.py    # Diff installed claude binary against trigger list
 └── tests/
-    ├── test_cross_platform.py        # 89 unit tests — runs on any OS
-    ├── test_pty_integration.py       # 9 real-PTY end-to-end tests (POSIX)
+    ├── test_cross_platform.py        # 89 prompt-detection tests — runs on any OS
+    ├── test_internals.py             # 70 helper tests — ANSI/UTF-8/fuzz/security
+    ├── test_pty_integration.py       # 21 real-PTY end-to-end tests (POSIX)
     ├── _mock_target.py               # Helper used by integration tests
     ├── mock_claude_comprehensive.py  # Legacy interactive PTY harness
     └── mock_claude.py                # Simple mock for manual testing
