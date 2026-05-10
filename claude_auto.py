@@ -76,35 +76,42 @@ def run_posix(command):
 
             ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
+            raw_buffer = ""
             while True:
                 r, w, e = select.select([fd, sys.stdin], [], [])
-                
+
                 if fd in r:
                     try:
                         output = os.read(fd, 1024)
                     except OSError:
                         break
-                    
+
                     if not output:
                         break
-                    
+
                     sys.stdout.buffer.write(output)
                     sys.stdout.buffer.flush()
 
                     decoded = output.decode('utf-8', errors='ignore')
-                    clean_decoded = ansi_escape.sub('', decoded)
-                    
+
                     if log_file:
                         log_file.write("RAW: " + repr(output) + "\n")
-                    
-                    buffer += clean_decoded.replace(' ', '')
-                    if len(buffer) > 2048:
-                        buffer = buffer[-2048:]
+
+                    # Keep raw (un-stripped) tail so ANSI escapes split across reads
+                    # reassemble before regex runs. Per-chunk stripping would leave
+                    # an orphan ESC in chunk N and literal "[1Cword" in chunk N+1,
+                    # breaking trigger substrings.
+                    raw_buffer += decoded
+                    if len(raw_buffer) > 4096:
+                        raw_buffer = raw_buffer[-4096:]
+
+                    buffer = ansi_escape.sub('', raw_buffer).replace(' ', '')
 
                     response, triggered, settle = process_buffer(buffer, log_file)
                     if triggered:
                         time.sleep(settle)
                         os.write(fd, response)
+                        raw_buffer = ""
                         buffer = ""
                         
                 if sys.stdin in r:
@@ -152,25 +159,26 @@ def run_windows(command):
     
     # Thread to constantly read output from the process
     def read_output():
-        buffer = ""
+        raw_buffer = ""
         while True:
             try:
                 char = child.read_nonblocking(size=1, timeout=None)
                 sys.stdout.write(char)
                 sys.stdout.flush()
 
-                clean_char = ansi_escape.sub('', char)
-                if clean_char.strip() != '': 
-                    buffer += clean_char
+                # Buffer raw bytes; strip ANSI on whole buffer each pass so escapes
+                # split across reads (e.g. ESC then "[1C") reassemble before regex.
+                raw_buffer += char
+                if len(raw_buffer) > 4096:
+                    raw_buffer = raw_buffer[-4096:]
 
-                if len(buffer) > 2048:
-                    buffer = buffer[-2048:]
+                buffer = ansi_escape.sub('', raw_buffer).replace(' ', '')
 
                 response, triggered, settle = process_buffer(buffer, None)
                 if triggered:
                     time.sleep(settle)
                     child.send(response.decode('utf-8'))
-                    buffer = ""
+                    raw_buffer = ""
             except wexpect.EOF:
                 break
             except Exception:

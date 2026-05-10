@@ -80,6 +80,14 @@ Approve? [y/N]
 
 ---
 
+<div align="center">
+
+### 🚧 Repository under active maintenance 🚧
+
+</div>
+
+---
+
 ## Supported prompt types
 
 | Pattern | Example | Action |
