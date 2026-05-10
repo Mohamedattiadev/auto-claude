@@ -63,19 +63,43 @@ TAIL_WINDOW = 600
 
 # Minimum interval between two identical fires. Guards against terminal
 # redraws (resize, scroll) that re-render the same prompt within a few
-# milliseconds and would otherwise cause double-keypress.
+# milliseconds and would otherwise cause double-keypress. The throttle key
+# is (response, signature) where signature = hash(buffer[-200:]) — so two
+# genuinely-different prompts that share the same response are not
+# suppressed, only the same prompt re-rendered.
 THROTTLE_INTERVAL_S = 0.5
+THROTTLE_SIG_LEN = 200
+
+# Quiescence settle: instead of a fixed sleep, wait until the PTY has been
+# silent for QUIET_PERIOD seconds, capped at MAX_SETTLE. Adapts to slow
+# terminals and large diffs that take longer than 0.35 s to finish painting.
+QUIET_PERIOD_S = 0.12
+MAX_SETTLE_S = 0.6
 
 
-def process_buffer(buffer, log_file):
+def _fire_signature(buffer):
+    return hash(buffer[-THROTTLE_SIG_LEN:])
+
+
+def process_buffer(buffer, log_file,
+                   enter_triggers=None,
+                   y_triggers=None,
+                   press_enter_triggers=None):
     """Checks the tail of the rolling text buffer.
 
     Returns (response_bytes, triggered, settle_seconds).
+
+    Trigger lists default to the module-level constants. Callers can pass
+    filtered copies to honour `--skip-trigger` from the command line.
     """
+    et = enter_triggers if enter_triggers is not None else PROMPT_ENTER_TRIGGERS
+    yt = y_triggers if y_triggers is not None else PROMPT_Y_TRIGGERS
+    pet = press_enter_triggers if press_enter_triggers is not None else PRESS_ENTER_TRIGGERS
+
     tail = buffer[-TAIL_WINDOW:]
 
     # "Press Enter to..." — single-line prompts, no menu rendered.
-    if any(t in tail for t in PRESS_ENTER_TRIGGERS):
+    if any(t in tail for t in pet):
         if log_file:
             log_file.write("--- TRIGGERED ENTER (press-enter) ---\n")
             log_file.flush()
@@ -85,7 +109,7 @@ def process_buffer(buffer, log_file):
     # indicator (`1.Yes`). Without the indicator, "Do you want to..." text
     # is just prose (Claude explaining something, README content, etc.).
     if MENU_INDICATOR in tail:
-        for trigger in PROMPT_ENTER_TRIGGERS:
+        for trigger in et:
             if trigger in tail:
                 if log_file:
                     log_file.write("--- TRIGGERED ENTER (menu) ---\n")
@@ -93,7 +117,7 @@ def process_buffer(buffer, log_file):
                 return b"\r", True, 0.35
 
     # Y/N prompts.
-    if any(t in tail for t in PROMPT_Y_TRIGGERS):
+    if any(t in tail for t in yt):
         if log_file:
             log_file.write("--- TRIGGERED Y ---\n")
             log_file.flush()
@@ -152,7 +176,7 @@ def _trim_raw_buffer(raw_buffer, soft_max=8192, target=4096):
 # ==========================================
 # MAC / LINUX (POSIX) IMPLEMENTATION
 # ==========================================
-def run_posix(command):
+def run_posix(command, opts):
     import pty
     import select
     import termios
@@ -213,6 +237,34 @@ def run_posix(command):
             raw_buffer = ""
             last_fire_time = 0.0
             last_fire_response = None
+            last_fire_signature = None
+
+            def settle_quiet(rb, max_wait):
+                """Wait until PTY is silent for QUIET_PERIOD or max_wait elapses.
+                Absorbs any new bytes into rb (still echoed to user)."""
+                deadline = time.monotonic() + max_wait
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return rb
+                    timeout = min(QUIET_PERIOD_S, remaining)
+                    try:
+                        rr, _, _ = select.select([fd], [], [], timeout)
+                    except (InterruptedError, OSError):
+                        continue
+                    if not rr:
+                        return rb  # quiet period reached
+                    try:
+                        more = os.read(fd, 1024)
+                    except OSError:
+                        return rb
+                    if not more:
+                        return rb
+                    sys.stdout.buffer.write(more)
+                    sys.stdout.buffer.flush()
+                    rb = _trim_raw_buffer(rb + decoder.decode(more))
+                    if log_file:
+                        log_file.write("RAW(settle): " + repr(more) + "\n")
 
             while True:
                 try:
@@ -249,26 +301,47 @@ def run_posix(command):
 
                     buffer = ANSI_ESCAPE.sub('', raw_buffer).replace(' ', '')
 
-                    response, triggered, settle = process_buffer(buffer, log_file)
+                    response, triggered, settle = process_buffer(
+                        buffer, log_file,
+                        enter_triggers=opts["enter_triggers"],
+                        y_triggers=opts["y_triggers"],
+                        press_enter_triggers=opts["press_enter_triggers"],
+                    )
                     if triggered:
                         now = time.monotonic()
+                        sig = _fire_signature(buffer)
+                        # Throttle on (response, signature). Same prompt
+                        # re-rendered within window → suppress. A genuinely
+                        # different prompt with the same response (e.g. two
+                        # back-to-back y/N) has a different signature and
+                        # passes through.
                         if (response == last_fire_response and
+                                sig == last_fire_signature and
                                 now - last_fire_time < THROTTLE_INTERVAL_S):
-                            # Same prompt re-rendered within the throttle
-                            # window — terminal redraw, not a real new prompt.
                             if log_file:
                                 log_file.write("--- THROTTLED ---\n")
                                 log_file.flush()
                             raw_buffer = ""
                             buffer = ""
                             continue
-                        time.sleep(settle)
-                        try:
-                            os.write(fd, response)
-                        except OSError:
-                            break
+                        # Quiescence settle — wait for the menu / preview
+                        # to finish painting before sending the keypress.
+                        raw_buffer = settle_quiet(raw_buffer, max(settle, MAX_SETTLE_S))
+                        if opts["dry_run"]:
+                            sys.stderr.write(
+                                f"\r\n[auto:dry-run] would fire {response!r}\r\n"
+                            )
+                            if log_file:
+                                log_file.write(f"--- DRY-RUN: would fire {response!r} ---\n")
+                                log_file.flush()
+                        else:
+                            try:
+                                os.write(fd, response)
+                            except OSError:
+                                break
                         last_fire_time = time.monotonic()
                         last_fire_response = response
+                        last_fire_signature = sig
                         raw_buffer = ""
                         buffer = ""
 
@@ -295,7 +368,7 @@ def run_posix(command):
 # ==========================================
 # WINDOWS IMPLEMENTATION
 # ==========================================
-def run_windows(command):
+def run_windows(command, opts):
     try:
         import wexpect
     except ImportError:
@@ -324,6 +397,7 @@ def run_windows(command):
         raw_buffer = ""
         last_fire_time = 0.0
         last_fire_response = None
+        last_fire_signature = None
         while True:
             try:
                 char = child.read_nonblocking(size=1, timeout=None)
@@ -338,17 +412,31 @@ def run_windows(command):
                 raw_buffer = _trim_raw_buffer(raw_buffer + decoded)
                 buffer = ANSI_ESCAPE.sub('', raw_buffer).replace(' ', '')
 
-                response, triggered, settle = process_buffer(buffer, None)
+                response, triggered, settle = process_buffer(
+                    buffer, None,
+                    enter_triggers=opts["enter_triggers"],
+                    y_triggers=opts["y_triggers"],
+                    press_enter_triggers=opts["press_enter_triggers"],
+                )
                 if triggered:
                     now = time.monotonic()
+                    sig = _fire_signature(buffer)
                     if (response == last_fire_response and
+                            sig == last_fire_signature and
                             now - last_fire_time < THROTTLE_INTERVAL_S):
                         raw_buffer = ""
                         continue
-                    time.sleep(settle)
-                    child.send(response.decode('utf-8'))
+                    # Approximate quiescence on Windows (no select on PTY fd).
+                    time.sleep(max(settle, MAX_SETTLE_S))
+                    if opts["dry_run"]:
+                        sys.stderr.write(
+                            f"\n[auto:dry-run] would fire {response!r}\n"
+                        )
+                    else:
+                        child.send(response.decode('utf-8'))
                     last_fire_time = time.monotonic()
                     last_fire_response = response
+                    last_fire_signature = sig
                     raw_buffer = ""
             except wexpect.EOF:
                 break
@@ -377,28 +465,86 @@ def run_windows(command):
 # ==========================================
 # ENTRY POINT
 # ==========================================
+USAGE = """\
+Usage:   auto [auto-flags] <command> [args...]
+
+Auto-flags (must come BEFORE the wrapped command):
+  --skip-trigger PHRASE   Disable a specific trigger. Spaces are
+                          ignored. Repeatable. Example:
+                          --skip-trigger 'Overwrite?'
+  --dry-run               Log fires to stderr instead of sending the
+                          keypress. Useful for verifying detection
+                          without taking action.
+  --fake-os=PLATFORM      Force the platform branch (win32/darwin/linux),
+                          for testing.
+  -h, --help              Show this message.
+
+Examples:
+  auto claude
+  auto claude --resume <session-id>
+  auto claude --dangerously-skip-permissions
+  auto --dry-run claude
+  auto --skip-trigger 'Overwrite?' --skip-trigger 'Allow?' claude
+"""
+
+
+def _parse_args(argv):
+    skip_triggers = []
+    dry_run = False
+    platform = sys.platform
+    args = list(argv)
+    while args and args[0].startswith("--"):
+        flag = args[0]
+        if flag in ("--help", "-h"):
+            print(USAGE)
+            sys.exit(0)
+        if flag == "--skip-trigger":
+            if len(args) < 2:
+                sys.stderr.write("auto: --skip-trigger needs an argument\n")
+                sys.exit(2)
+            skip_triggers.append(args[1].replace(" ", ""))
+            args = args[2:]
+        elif flag == "--dry-run":
+            dry_run = True
+            args = args[1:]
+        elif flag.startswith("--fake-os="):
+            platform = flag.split("=", 1)[1]
+            args = args[1:]
+        else:
+            # Anything else belongs to the wrapped command (e.g.
+            # `--resume`, `--dangerously-skip-permissions`).
+            break
+    return args, skip_triggers, dry_run, platform
+
+
+def _build_opts(skip_triggers, dry_run):
+    return {
+        "enter_triggers": [t for t in PROMPT_ENTER_TRIGGERS if t not in skip_triggers],
+        "y_triggers": [t for t in PROMPT_Y_TRIGGERS if t not in skip_triggers],
+        "press_enter_triggers": tuple(
+            t for t in PRESS_ENTER_TRIGGERS if t not in skip_triggers
+        ),
+        "dry_run": dry_run,
+    }
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage:   auto <command> [args...]")
-        print()
-        print("Examples:")
-        print("  auto claude")
-        print("  auto claude --resume <session-id>")
-        print("  auto claude --dangerously-skip-permissions")
-        print("  auto ./my_script.py")
+        print(USAGE)
         sys.exit(1)
 
-    command = sys.argv[1:]
-    platform = sys.platform
+    command, skip_triggers, dry_run, platform = _parse_args(sys.argv[1:])
+    if not command:
+        sys.stderr.write("auto: no command given\n\n")
+        print(USAGE)
+        sys.exit(1)
 
-    if command and command[0].startswith("--fake-os="):
-        platform = command[0].split("=")[1]
-        command = command[1:]
+    opts = _build_opts(skip_triggers, dry_run)
 
     if platform == "win32":
-        run_windows(command)
+        run_windows(command, opts)
     else:
-        run_posix(command)
+        run_posix(command, opts)
 
 if __name__ == "__main__":
     main()

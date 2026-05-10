@@ -7,7 +7,7 @@
 ![CI](https://github.com/Mohamedattiadev/auto-claude/actions/workflows/test.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green)
-![Tests](https://img.shields.io/badge/tests-82%2F82%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-89%2F89%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
@@ -39,6 +39,21 @@ auto claude --resume 7980f143-df57-4945-94ba-ca71cd425dd5
 
 # Skip permissions entirely (Claude's built-in flag)
 auto claude --dangerously-skip-permissions
+```
+
+### Auto-flags
+
+Flags consumed by `auto` itself (must precede the wrapped command):
+
+```bash
+# Verify what would fire without actually pressing keys
+auto --dry-run claude
+
+# Disable specific triggers (repeatable, spaces ignored)
+auto --skip-trigger 'Overwrite?' --skip-trigger 'Allow?' claude
+
+# See full flag list
+auto --help
 ```
 
 Works in **bash**, **zsh**, **fish**, **ksh**, **PowerShell**, **CMD**, and any other terminal.
@@ -132,7 +147,10 @@ Prompts are detected even if they arrive split across multiple data chunks (a re
 - **PTY fork / exec failures** print a clear `auto: …` error instead of leaving the terminal in raw mode.
 - **`SIGWINCH` during `select`** is retried instead of bubbling up as `InterruptedError`.
 - **Debug log** lives at `~/.cache/claude_auto/claude_auto.log` (mode `0600`, `O_NOFOLLOW`) instead of a world-readable path in `/tmp`.
-- **Fire throttle** — identical responses within 500 ms are suppressed so a terminal redraw (window resize, scroll) re-rendering the same prompt cannot cause a double-keypress.
+- **Signature-aware throttle** — identical fires within 500 ms are suppressed using a `(response, hash(tail))` key, so a terminal redraw cannot cause double-keypress, but two genuinely different prompts that happen to share the same response (e.g. two back-to-back `[y/N]`) are not suppressed.
+- **Quiescence settle** — instead of a fixed sleep, the clicker waits until the PTY has been silent for 120 ms (capped at 600 ms) before sending the keypress, so slow-rendering menus finish painting first and the highlighted default doesn't shift mid-fire.
+- **Dry-run mode** — `auto --dry-run claude` logs every fire to stderr without writing to the PTY, useful for verifying detection on an unfamiliar Claude version.
+- **Per-trigger opt-out** — `auto --skip-trigger 'Overwrite?' claude` disables a specific trigger without editing source.
 
 ### Keeping triggers fresh
 
@@ -167,7 +185,7 @@ python3 install.py --uninstall
 
 ## Test results
 
-The project ships with a 82-test suite covering every known prompt variant plus regression tests for false-positive guards.
+The project ships with a 89-test suite covering every known prompt variant plus regression tests for false-positive guards.
 
 ### Cross-platform unit tests (`tests/test_cross_platform.py`)
 Runs on **any OS** — no PTY required.
@@ -292,9 +310,9 @@ Runs on **any OS** — no PTY required.
 [PASS] 55 rapid (y/N)
 
 ============================================================
- RESULTS ON Linux (linux): 82/82 PASSED
+ RESULTS ON Linux (linux): 89/89 PASSED
  (sourced from anthropics/claude-code issues #12367, #3366, #6797, #2147)
- ✓ ALL 82 TESTS PASSED — 100% cross-platform ready!
+ ✓ ALL 89 TESTS PASSED — 100% cross-platform ready!
 ============================================================
 ```
 
@@ -322,7 +340,7 @@ auto-claude/
 ├── scripts/
 │   └── sync-triggers.py    # Diff installed claude binary against trigger list
 └── tests/
-    ├── test_cross_platform.py        # 82 unit tests — runs on any OS
+    ├── test_cross_platform.py        # 89 unit tests — runs on any OS
     ├── mock_claude_comprehensive.py  # 55 PTY integration tests
     └── mock_claude.py                # Simple mock for manual testing
 ```

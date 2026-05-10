@@ -16,7 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── Import the core logic from claude_auto ──────────────────────────────────
 try:
-    from claude_auto import process_buffer, PROMPT_Y_TRIGGERS, PROMPT_ENTER_TRIGGERS
+    from claude_auto import (
+        process_buffer,
+        PROMPT_Y_TRIGGERS,
+        PROMPT_ENTER_TRIGGERS,
+        PRESS_ENTER_TRIGGERS,
+        _parse_args,
+        _build_opts,
+        _fire_signature,
+    )
 except ImportError as e:
     print(f"ERROR: Could not import claude_auto.py: {e}")
     sys.exit(1)
@@ -282,6 +290,54 @@ def run_tests():
     ]
     for label, text, expected in rapid:
         check(label, text, expected)
+
+    section("CLI Args — --skip-trigger / --dry-run")
+
+    # _parse_args: skip-trigger consumed, command preserved
+    cmd, skips, dry, plat = _parse_args(["--skip-trigger", "Overwrite?", "claude"])
+    ok = cmd == ["claude"] and skips == ["Overwrite?"] and dry is False
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A1 --skip-trigger parses")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # _parse_args: --dry-run flag
+    cmd, skips, dry, plat = _parse_args(["--dry-run", "claude", "--resume", "x"])
+    ok = cmd == ["claude", "--resume", "x"] and dry is True and skips == []
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A2 --dry-run parses, command flags preserved")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # _parse_args: unknown flag belongs to wrapped command
+    cmd, skips, dry, plat = _parse_args(["claude", "--dangerously-skip-permissions"])
+    ok = cmd == ["claude", "--dangerously-skip-permissions"]
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A3 wrapped-command flags untouched")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # Skip-trigger normalizes spaces
+    cmd, skips, dry, plat = _parse_args(["--skip-trigger", "Allow ?", "claude"])
+    ok = skips == ["Allow?"]
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A4 --skip-trigger strips spaces")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # _build_opts: skipped trigger removed from filtered lists
+    opts = _build_opts(["Overwrite?"], False)
+    ok = "Overwrite?" not in opts["enter_triggers"] and "Doyouwantto" in opts["enter_triggers"]
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A5 _build_opts filters skipped trigger")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # process_buffer with custom enter_triggers — skipping "Overwrite?" silences it
+    buf = "Overwrite?\r\n❯ 1. Yes\r\n  2. No".replace(" ", "")
+    custom_et = [t for t in PROMPT_ENTER_TRIGGERS if t != "Overwrite?"]
+    r, trig, _ = process_buffer(buf, None, enter_triggers=custom_et)
+    ok = not trig
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A6 skipping 'Overwrite?' silences it")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
+
+    # ── Throttle signature: identical buffer → same sig; different → different ──
+    sig1 = _fire_signature("xxx Do you want to proceed? 1.Yes 2.No")
+    sig2 = _fire_signature("xxx Do you want to proceed? 1.Yes 2.No")
+    sig3 = _fire_signature("xxx Do you want to delete file.txt? 1.Yes 2.No")
+    ok = sig1 == sig2 and sig1 != sig3
+    print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A7 throttle signature distinguishes prompts")
+    PASS += 1 if ok else 0; FAIL += 0 if ok else 1
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
     total = PASS + FAIL
