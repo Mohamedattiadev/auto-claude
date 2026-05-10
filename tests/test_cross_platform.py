@@ -211,6 +211,67 @@ def run_tests():
           "The docs ask: Do you trust the files in this folder? — but only on first launch.",
           "none")
 
+    section("Binary-Confirmed Prompts (claude v2.1.128 strings)")
+    # Strings extracted directly from /opt/claude-code/bin/claude
+    check("B1 'Do you want to continue?'",
+          "Do you want to continue?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B2 'Do you want to allow Claude to fetch this content?'",
+          "Do you want to allow Claude to fetch this content?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B3 'Do you want to allow this connection?'",
+          "Do you want to allow this connection?\r\n❯ 1. Yes, and don't ask again for example.com\r\n  2. No",
+          "enter")
+    check("B4 'Do you want to use this API key?'",
+          "Do you want to use this API key?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B5 'Trust this directory?' (current trust prompt)",
+          "Trust this directory?\r\n❯ 1. Yes, proceed\r\n  2. No, exit",
+          "enter")
+    check("B6 'Press Enter to try again' (variant of press-enter)",
+          "Connection failed.\r\nPress Enter to try again, or any other key to cancel",
+          "enter")
+    check("B7 'Bypass Permissions mode' launch warning",
+          "WARNING: Claude Code running in Bypass Permissions mode\r\n❯ 1. Yes, I accept\r\n  2. No, exit",
+          "enter")
+    check("B8 'Yes, and allow Claude to edit its own settings' menu",
+          "Do you want to make this edit to settings.json?\r\n❯ 1. Yes\r\n  2. Yes, and allow Claude to edit its own settings for this session\r\n  3. No",
+          "enter")
+    check("B9 'Yes, and bypass permissions' menu",
+          "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. Yes, and bypass permissions\r\n  3. No",
+          "enter")
+    check("B10 'Would you like to install it?'",
+          "Would you like to install it?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B11 'Would you like to install this LSP plugin?'",
+          "Would you like to install this LSP plugin?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B12 'Are you sure you want to delete this permission rule?'",
+          "Are you sure you want to delete this permission rule?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B13 'Allow external CLAUDE.md file imports?'",
+          "Allow external CLAUDE.md file imports?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B14 'Enable auto mode?'",
+          "Enable auto mode?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B15 'Remove server?'",
+          "Remove server?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B16 'Overwrite?' menu",
+          "Overwrite?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    check("B17 'Delete it along with the plugin?'",
+          "Delete it along with the plugin?\r\n❯ 1. Yes\r\n  2. No",
+          "enter")
+    # Safety: "Exit plan mode?" must NOT fire — it would discard plan work
+    check("B18 'Exit plan mode?' must NOT fire",
+          "Exit plan mode?\r\n❯ 1. Yes\r\n  2. No",
+          "none")
+    check("B19 'Stop ultrareview?' must NOT fire",
+          "Stop ultrareview?\r\n❯ 1. Yes\r\n  2. No",
+          "none")
+
     section("Stress: Rapid Unique Prompts")
     rapid = [
         ("51 rapid Allow?",        "Allow?",                   "y"),

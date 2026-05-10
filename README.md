@@ -6,7 +6,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-blue)
 ![Python](https://img.shields.io/badge/python-3.8%2B-green)
-![Tests](https://img.shields.io/badge/tests-63%2F63%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-82%2F82%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
@@ -100,7 +100,16 @@ Approve? [y/N]
 | `Do you want to...` menu | `❯ 1. Yes` | Presses Enter |
 | `Do you want to make this edit?` | `❯ 1. Yes` | Presses Enter |
 | `Do you trust the files in this folder?` | `❯ 1. Yes, proceed` | Presses Enter |
-| `Press Enter to continue` | — | Presses Enter |
+| `Trust this directory?` | `❯ 1. Yes, proceed` | Presses Enter |
+| `Do you want to allow Claude to fetch this content?` | `❯ 1. Yes` | Presses Enter |
+| `Do you want to allow this connection?` | `❯ 1. Yes` | Presses Enter |
+| `Do you want to use this API key?` | `❯ 1. Yes` | Presses Enter |
+| `Would you like to install/create/proceed…?` | `❯ 1. Yes` | Presses Enter |
+| `Are you sure you want to delete this permission rule?` | `❯ 1. Yes` | Presses Enter |
+| `Allow external CLAUDE.md file imports?` | `❯ 1. Yes` | Presses Enter |
+| `Enable auto mode?` / `Remove server?` / `Overwrite?` | `❯ 1. Yes` | Presses Enter |
+| `WARNING: Bypass Permissions mode` | `❯ 1. Yes, I accept` | Presses Enter |
+| `Press Enter to continue` / `Press Enter to try again` | — | Presses Enter |
 
 Prompts are detected even if they arrive split across multiple data chunks (a real edge case in PTY streams).
 
@@ -108,6 +117,8 @@ Prompts are detected even if they arrive split across multiple data chunks (a re
 
 `auto` ignores trigger-shaped text that isn't an actual prompt:
 
+- **Triggers extracted from the actual `claude` binary** — strings sourced via `strings /opt/claude-code/bin/claude` against v2.1.128 ensure coverage matches what the real CLI prints, not guesswork.
+- **Destructive prompts are deliberately excluded** — `Exit plan mode?`, `Stop ultraplan?`, `Stop ultrareview?` are not auto-confirmed because firing Enter would discard work.
 - **Tail-anchored matching** — only the last ~600 chars of the screen are scanned, so phrases that scrolled out (or appeared in earlier prose / code blocks) won't re-fire.
 - **Menu indicator gate** — `Do you want to…` only fires Enter when the rendered menu (`1. Yes`) is also on screen, so prose like *"Do you want to know more"* is ignored.
 - **Extended ANSI stripping** — OSC (terminal title), DCS, APC, PM and SOS sequences are stripped alongside CSI, so a window-title update containing trigger text can't fire a key.
@@ -144,7 +155,7 @@ python3 install.py --uninstall
 
 ## Test results
 
-The project ships with a 63-test suite covering every known prompt variant plus regression tests for false-positive guards.
+The project ships with a 82-test suite covering every known prompt variant plus regression tests for false-positive guards.
 
 ### Cross-platform unit tests (`tests/test_cross_platform.py`)
 Runs on **any OS** — no PTY required.
@@ -236,6 +247,27 @@ Runs on **any OS** — no PTY required.
 [PASS] R4 'Yes, allow reading from' menu
 [PASS] R5 trust phrase in prose, no menu
 
+── Binary-Confirmed Prompts (claude v2.1.128 strings) ──
+[PASS] B1 'Do you want to continue?'
+[PASS] B2 'Do you want to allow Claude to fetch this content?'
+[PASS] B3 'Do you want to allow this connection?'
+[PASS] B4 'Do you want to use this API key?'
+[PASS] B5 'Trust this directory?' (current trust prompt)
+[PASS] B6 'Press Enter to try again' (variant of press-enter)
+[PASS] B7 'Bypass Permissions mode' launch warning
+[PASS] B8 'Yes, and allow Claude to edit its own settings' menu
+[PASS] B9 'Yes, and bypass permissions' menu
+[PASS] B10 'Would you like to install it?'
+[PASS] B11 'Would you like to install this LSP plugin?'
+[PASS] B12 'Are you sure you want to delete this permission rule?'
+[PASS] B13 'Allow external CLAUDE.md file imports?'
+[PASS] B14 'Enable auto mode?'
+[PASS] B15 'Remove server?'
+[PASS] B16 'Overwrite?' menu
+[PASS] B17 'Delete it along with the plugin?'
+[PASS] B18 'Exit plan mode?' must NOT fire
+[PASS] B19 'Stop ultrareview?' must NOT fire
+
 ── Edge Cases — Split Buffers (Accumulated) ──
 [PASS] 49 Prompt split across two chunks
 [PASS] 50 [y/N] split across two chunks
@@ -248,9 +280,9 @@ Runs on **any OS** — no PTY required.
 [PASS] 55 rapid (y/N)
 
 ============================================================
- RESULTS ON Linux (linux): 63/63 PASSED
+ RESULTS ON Linux (linux): 82/82 PASSED
  (sourced from anthropics/claude-code issues #12367, #3366, #6797, #2147)
- ✓ ALL 63 TESTS PASSED — 100% cross-platform ready!
+ ✓ ALL 82 TESTS PASSED — 100% cross-platform ready!
 ============================================================
 ```
 
@@ -274,7 +306,7 @@ auto-claude/
 ├── install.py              # Universal installer (Linux / macOS / Windows)
 ├── README.md
 └── tests/
-    ├── test_cross_platform.py        # 63 unit tests — runs on any OS
+    ├── test_cross_platform.py        # 82 unit tests — runs on any OS
     ├── mock_claude_comprehensive.py  # 55 PTY integration tests
     └── mock_claude.py                # Simple mock for manual testing
 ```

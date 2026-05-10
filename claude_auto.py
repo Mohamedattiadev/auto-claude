@@ -18,23 +18,46 @@ import codecs
 # Menu (Enter) prompts are additionally gated on the actual menu having
 # rendered — `1.Yes` must be present alongside the "Do you want to..." phrase.
 # This kills false fires on prose like "Do you want to know more about X".
+# Trigger strings sourced from the actual `claude` binary (v2.1.128) via
+# `strings | grep`. Buffer has spaces stripped before matching.
 PROMPT_ENTER_TRIGGERS = [
     "Doyouwanttoproceed?",
     "Doyouwanttocreate",
     "Doyouwanttorun",
     "Doyouwanttomake",          # "Do you want to make this edit to <file>?"
-    "Doyouwantto",
-    "Doyoutrustthefiles",        # workspace trust prompt on launch
-    "Doyoutrust",                # generic catch-all for trust dialogs
-    "PressEntertocontinue",
+    "Doyouwanttocontinue?",     # "Do you want to continue?"
+    "Doyouwanttoallow",         # "...allow Claude to fetch", "...allow this connection"
+    "Doyouwanttouse",           # "Do you want to use this API key?"
+    "Doyouwantto",              # generic catch-all
+    "Doyoutrustthefiles",       # legacy "Do you trust the files in this folder?"
+    "Trustthisdirectory?",      # current (2.1.x) trust prompt
+    "Doyoutrust",               # catch-all for trust dialogs
+    "BypassPermissionsmode",    # --dangerously-skip-permissions launch warning
+    "Wouldyouliketo",           # "Would you like to install/create/proceed..."
+    "Areyousureyouwantto",      # "Are you sure you want to delete this permission rule?"
+    "AllowexternalCLAUDE.md",   # "Allow external CLAUDE.md file imports?"
+    "Enableautomode?",
+    "Removedirectoryfromworkspace?",
+    "Removeserver?",
+    "Removetask?",
+    "Deleteitalongwith",        # "Delete it along with the plugin?"
+    "Disableitjustforyou",      # "Disable it just for you in .claude/settings.local.json?"
+    "Overwrite?",
 ]
+# NOTE: "Exit plan mode?" / "Stop ultraplan?" / "Stop ultrareview?" are
+# deliberately NOT auto-confirmed — they abort/exit user work flows.
+
+# Press-Enter prompts — single-line, fire without menu indicator.
+PRESS_ENTER_TRIGGERS = (
+    "PressEntertocontinue",
+    "PressEntertotryagain",     # "Press Enter to try again, or any other key to cancel"
+)
 
 PROMPT_Y_TRIGGERS = [
     "(Y/n)", "(y/n)", "(y/N)", "[y/N]", "[Y/n]", "[y/n]", "[Y/N]",
     "Approve?[y/N]", "Allow?"
 ]
 
-PRESS_ENTER_TRIGGER = "PressEntertocontinue"
 MENU_INDICATOR = "1.Yes"
 TAIL_WINDOW = 600
 
@@ -46,8 +69,8 @@ def process_buffer(buffer, log_file):
     """
     tail = buffer[-TAIL_WINDOW:]
 
-    # "Press Enter to continue" — single-line prompt, no menu rendered.
-    if PRESS_ENTER_TRIGGER in tail:
+    # "Press Enter to..." — single-line prompts, no menu rendered.
+    if any(t in tail for t in PRESS_ENTER_TRIGGERS):
         if log_file:
             log_file.write("--- TRIGGERED ENTER (press-enter) ---\n")
             log_file.flush()
@@ -58,8 +81,6 @@ def process_buffer(buffer, log_file):
     # is just prose (Claude explaining something, README content, etc.).
     if MENU_INDICATOR in tail:
         for trigger in PROMPT_ENTER_TRIGGERS:
-            if trigger == PRESS_ENTER_TRIGGER:
-                continue
             if trigger in tail:
                 if log_file:
                     log_file.write("--- TRIGGERED ENTER (menu) ---\n")
