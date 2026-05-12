@@ -205,6 +205,31 @@ class TestPtyIntegration(unittest.TestCase):
         )
         self.assertNotEqual(rc, 0)
 
+    def test_redraw_cascade_collapses_to_single_fire(self):
+        # The exact failure user reported: Claude redraws the prompt
+        # repeatedly during response lag, and pre-cooldown each redraw
+        # fires another `y`, producing `❯ y ❯ y ❯ y` in the input box.
+        # With POST_FIRE_COOLDOWN_S, the cascade must collapse.
+        result, rc = run_auto_session([
+            {"prompt": "Continue? [y/N]",
+             "redraws": 8, "redraw_gap": 0.08, "listen_for": 2.5},
+        ])
+        self.assertIsNotNone(result)
+        # Exactly ONE y allowed — extra ys are the bug.
+        self.assertEqual(result[0].count("y"), 1,
+                         f"expected 1 y, got {result[0]!r}")
+
+    def test_menu_redraw_cascade_collapses_to_single_fire(self):
+        result, rc = run_auto_session([
+            {"prompt": "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No",
+             "redraws": 6, "redraw_gap": 0.08, "listen_for": 2.5},
+        ])
+        self.assertIsNotNone(result)
+        # Enter is `\r` but PTY ONLCR may translate to `\n`. Count either.
+        cr_or_lf = result[0].count("\r") + result[0].count("\n")
+        self.assertEqual(cr_or_lf, 1,
+                         f"expected 1 CR/LF, got {result[0]!r}")
+
     def test_unknown_skip_trigger_silent(self):
         # Skipping a phrase that isn't a real trigger should not break
         # anything — actual prompt still fires.

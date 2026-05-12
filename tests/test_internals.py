@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from claude_auto import (
     ANSI_ESCAPE,
     MENU_INDICATOR,
+    MENU_INDICATORS,
     PROMPT_ENTER_TRIGGERS,
     PROMPT_Y_TRIGGERS,
     PRESS_ENTER_TRIGGERS,
@@ -25,6 +26,7 @@ from claude_auto import (
     THROTTLE_SIG_LEN,
     _build_opts,
     _fire_signature,
+    _normalize,
     _open_log,
     _parse_args,
     _trim_raw_buffer,
@@ -34,7 +36,7 @@ from claude_auto import (
 
 
 def strip(text):
-    return ANSI_ESCAPE.sub("", text).replace(" ", "")
+    return _normalize(text)
 
 
 class TestAnsiEscape(unittest.TestCase):
@@ -69,13 +71,13 @@ class TestAnsiEscape(unittest.TestCase):
         """Trigger phrase inside OSC title must not fire — gets stripped."""
         text = "\x1b]0;Do you want to proceed?\x07I am working..."
         buf = strip(text)
-        _, trig, _ = process_buffer(buf, None)
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertFalse(trig)
 
     def test_hyperlink_title_does_not_false_fire(self):
         text = "\x1b]8;;file:///x?[y/N]\x1b\\hello\x1b]8;;\x1b\\"
         buf = strip(text)
-        _, trig, _ = process_buffer(buf, None)
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertFalse(trig)
 
 
@@ -127,27 +129,39 @@ class TestUtf8Decoder(unittest.TestCase):
 
 
 class TestProcessBufferReturnShape(unittest.TestCase):
-    def test_returns_tuple_of_three(self):
+    def test_returns_tuple_of_four(self):
         r = process_buffer("nothing here", None)
-        self.assertEqual(len(r), 3)
+        self.assertEqual(len(r), 4)
+        self.assertEqual(r, (None, False, 0, ""))
+
+    def test_matched_trigger_returned(self):
+        buf = strip("Do you want to proceed?\n❯ 1. Yes\n  2. No")
+        _, trig, _, matched = process_buffer(buf, None)
+        self.assertTrue(trig)
+        self.assertIn("Doyouwant", matched)
+
+    def test_matched_trigger_for_yn(self):
+        _, trig, _, matched = process_buffer("Allow?", None)
+        self.assertTrue(trig)
+        self.assertEqual(matched, "Allow?")
 
     def test_y_response_settle_is_short(self):
-        _, _, settle = process_buffer("Allow?", None)
+        _, _, settle, _ = process_buffer("Allow?", None)
         self.assertLess(settle, 0.2)
 
     def test_enter_response_settle_is_longer(self):
         buf = strip("Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No")
-        _, _, settle = process_buffer(buf, None)
+        _, _, settle, _ = process_buffer(buf, None)
         self.assertGreaterEqual(settle, 0.3)
 
     def test_press_enter_priority_over_y(self):
         # Both "Press Enter" and "[y/N]" present — press-enter wins.
         buf = strip("Press Enter to continue [y/N]")
-        response, _, _ = process_buffer(buf, None)
+        response, _, _, _ = process_buffer(buf, None)
         self.assertEqual(response, b"\r")
 
     def test_no_trigger_returns_zero_settle(self):
-        _, _, settle = process_buffer("idle", None)
+        _, _, settle, _ = process_buffer("idle", None)
         self.assertEqual(settle, 0)
 
 
@@ -155,13 +169,13 @@ class TestTailWindowBoundary(unittest.TestCase):
     def test_trigger_just_inside_tail_fires(self):
         head = "x" * (TAIL_WINDOW - 10)
         buf = head + "[y/N]"
-        _, trig, _ = process_buffer(buf, None)
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertTrue(trig)
 
     def test_trigger_just_outside_tail_does_not_fire(self):
-        # [y/N] then 700 chars of unrelated text → trigger scrolled out.
-        buf = "[y/N]" + ("x" * 700)
-        _, trig, _ = process_buffer(buf, None)
+        # [y/N] then TAIL_WINDOW+100 chars of unrelated text → trigger scrolled out.
+        buf = "[y/N]" + ("x" * (TAIL_WINDOW + 100))
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertFalse(trig)
 
 
@@ -258,32 +272,32 @@ class TestNoFalseFire(unittest.TestCase):
     """Cases that historically produced false fires."""
 
     def test_empty_buffer(self):
-        _, trig, _ = process_buffer("", None)
+        _, trig, _, _ = process_buffer("", None)
         self.assertFalse(trig)
 
     def test_only_whitespace(self):
-        _, trig, _ = process_buffer("   \n\t  ", None)
+        _, trig, _, _ = process_buffer("   \n\t  ", None)
         self.assertFalse(trig)
 
     def test_lone_question_mark(self):
-        _, trig, _ = process_buffer("?", None)
+        _, trig, _, _ = process_buffer("?", None)
         self.assertFalse(trig)
 
     def test_yn_inside_code_block_no_menu_fires_y(self):
         # "[y/N]" anywhere in tail fires y — by design, no menu gating.
         # Documents current behavior so regression is visible.
-        _, trig, _ = process_buffer("example: [y/N]", None)
+        _, trig, _, _ = process_buffer("example: [y/N]", None)
         self.assertTrue(trig)
 
     def test_menu_indicator_alone_no_question(self):
         # "1.Yes" alone without any "Do you want..." trigger → no fire.
         buf = strip("Some output 1. Yes here")
-        _, trig, _ = process_buffer(buf, None)
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertFalse(trig)
 
     def test_destructive_exit_plan_does_not_fire(self):
         buf = strip("Exit plan mode?\r\n❯ 1. Yes\r\n  2. No")
-        _, trig, _ = process_buffer(buf, None)
+        _, trig, _, _ = process_buffer(buf, None)
         self.assertFalse(trig)
 
 
@@ -359,7 +373,7 @@ class TestProcessBufferFuzz(unittest.TestCase):
             blob = bytes(rng.randint(0, 255) for _ in range(n))
             text = blob.decode("utf-8", errors="replace")
             cleaned = ANSI_ESCAPE.sub("", text).replace(" ", "")
-            response, triggered, settle = process_buffer(cleaned, None)
+            response, triggered, settle, _ = process_buffer(cleaned, None)
             self.assertIsInstance(triggered, bool)
             if triggered:
                 self.assertIn(response, (b"y\r", b"\r"))
@@ -382,7 +396,7 @@ class TestProcessBufferFuzz(unittest.TestCase):
         # 1 MB of unrelated data — must complete fast and not fire.
         big = "lorem ipsum dolor sit amet " * 40000
         cleaned = ANSI_ESCAPE.sub("", big).replace(" ", "")
-        _, trig, _ = process_buffer(cleaned, None)
+        _, trig, _, _ = process_buffer(cleaned, None)
         self.assertFalse(trig)
 
 
@@ -419,7 +433,7 @@ class TestSkipTriggerCoverage(unittest.TestCase):
     def test_skipping_y_trigger_silences_y_prompt(self):
         opts = _build_opts(["[y/N]"], False)
         buf = "Continue?[y/N]"
-        _, trig, _ = process_buffer(
+        _, trig, _, _ = process_buffer(
             buf, None,
             y_triggers=opts["y_triggers"],
         )
@@ -429,7 +443,7 @@ class TestSkipTriggerCoverage(unittest.TestCase):
     def test_skipping_press_enter_silences_press_enter(self):
         opts = _build_opts(["PressEntertocontinue"], False)
         buf = "PressEntertocontinue"
-        _, trig, _ = process_buffer(
+        _, trig, _, _ = process_buffer(
             buf, None,
             press_enter_triggers=opts["press_enter_triggers"],
         )
@@ -505,6 +519,79 @@ class TestParseArgsExtra(unittest.TestCase):
         self.assertEqual(cmd, [])
         self.assertEqual(skips, [])
         self.assertFalse(dry)
+
+
+class TestNormalize(unittest.TestCase):
+    """Edge cases that previously defeated the prompt detector."""
+
+    def test_nbsp_in_menu_indicator(self):
+        # Claude Code may render `1.` and `Yes` separated by NBSP.
+        buf = "Do you want to proceed?\n 1. Yes\n  2. No"
+        self.assertIn("1.Yes", _normalize(buf))
+
+    def test_nnbsp_in_menu_indicator(self):
+        buf = "Do you want to create x?\n1. Yes\n2. No"
+        self.assertIn("1.Yes", _normalize(buf))
+
+    def test_figure_space_in_menu_indicator(self):
+        buf = "Do you want to proceed?\n1. Yes"
+        self.assertIn("1.Yes", _normalize(buf))
+
+    def test_tab_in_menu_indicator(self):
+        buf = "Do you want to proceed?\n1.\tYes"
+        self.assertIn("1.Yes", _normalize(buf))
+
+    def test_zero_width_space_inside_trigger(self):
+        # ZWSP (U+200B) injected between glyphs by some renderers.
+        buf = "Do​ you want to proceed?\n1. Yes"
+        norm = _normalize(buf)
+        self.assertIn("Doyouwanttoproceed?", norm)
+        self.assertIn("1.Yes", norm)
+
+    def test_zwnj_zwj_bom_stripped(self):
+        buf = "1.‌‍﻿Yes"
+        self.assertIn("1.Yes", _normalize(buf))
+
+    def test_create_prompt_with_nbsp_fires(self):
+        # The exact failure case the user reported.
+        buf = ("...\n"
+               "Do you want to create ports.py?\n"
+               " ❯ 1. Yes\n"
+               "  2. Yes, allow all edits during this session (shift+tab)\n"
+               "  3. No")
+        resp, trig, _, _ = process_buffer(buf, None)
+        self.assertTrue(trig)
+        self.assertEqual(resp, b"\r")
+
+    def test_proceed_prompt_with_long_dont_ask_again_fires(self):
+        # Bash permission with long path in option 2 — previously may have
+        # pushed trigger out of the 600-char tail.
+        buf = ("Bash command\n"
+               "  python build_docx.py && python build_pdf.py\n"
+               "  Rebuild docs\n\n"
+               "Do you want to proceed?\n"
+               "❯ 1. Yes\n"
+               "  2. Yes, and don't ask again for python build_docx.py and "
+               "python build_pdf.py commands in "
+               "/home/ati/Attia-Pro/Projectos/CheckStyle_Pipe_Filter\n"
+               "  3. No")
+        resp, trig, _, _ = process_buffer(buf, None)
+        self.assertTrue(trig)
+        self.assertEqual(resp, b"\r")
+
+    def test_menu_indicators_tuple_exposed(self):
+        self.assertIn(MENU_INDICATOR, MENU_INDICATORS)
+
+    def test_ansi_with_nbsp_combined(self):
+        buf = "Do you want to proceed?\n\x1b[32m1. Yes\x1b[0m\n2. No"
+        norm = _normalize(buf)
+        self.assertIn("1.Yes", norm)
+        self.assertIn("Doyouwanttoproceed?", norm)
+
+    def test_widened_tail_window_holds_long_bash_prompt(self):
+        # Verify TAIL_WINDOW now comfortably exceeds the longest realistic
+        # bash-permission prompt (~500 chars).
+        self.assertGreaterEqual(TAIL_WINDOW, 1200)
 
 
 if __name__ == "__main__":

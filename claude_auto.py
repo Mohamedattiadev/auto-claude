@@ -5,7 +5,7 @@ import time
 import re
 import codecs
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Universal triggers — spaces are stripped from buffer to defeat CLI cursor-jump formatting.
 #
@@ -60,8 +60,14 @@ PROMPT_Y_TRIGGERS = [
     "Approve?[y/N]", "Allow?"
 ]
 
-MENU_INDICATOR = "1.Yes"
-TAIL_WINDOW = 600
+# Menu's first option text. Real prompts render `1. Yes` (selected with ❯).
+# Variants observed: `1.Yes`, `1.Yes,proceed`, `1.Yesallow`. We anchor on
+# the literal `1.Yes` (post-whitespace-strip) which covers every variant.
+# Defined as tuple so we can add more first-option strings without code
+# changes if Claude Code ever ships a different menu lead-in.
+MENU_INDICATORS = ("1.Yes",)
+MENU_INDICATOR = MENU_INDICATORS[0]  # retained for backwards compat
+TAIL_WINDOW = 1500
 
 # Minimum interval between two identical fires. Guards against terminal
 # redraws (resize, scroll) that re-render the same prompt within a few
@@ -69,8 +75,19 @@ TAIL_WINDOW = 600
 # is (response, signature) where signature = hash(buffer[-200:]) — so two
 # genuinely-different prompts that share the same response are not
 # suppressed, only the same prompt re-rendered.
-THROTTLE_INTERVAL_S = 0.5
+THROTTLE_INTERVAL_S = 1.5
 THROTTLE_SIG_LEN = 200
+
+# Post-fire cooldown. After firing, we keep draining PTY output (so the
+# user still sees everything) but skip the trigger detector entirely.
+# This is the single robust guard against the `❯ y ❯ y ❯ y` cascade:
+# during Claude's response lag, the prompt phrase can remain visible
+# while the target hasn't yet consumed our keypress — without a cooldown,
+# every redraw re-fires `y`, and Claude Code echoes each one as literal
+# input. 1.2 s comfortably exceeds Claude Code's prompt-consumption
+# latency while staying short enough that real consecutive prompts
+# (issued by the same agent in a row) fire promptly.
+POST_FIRE_COOLDOWN_S = 1.2
 
 # Quiescence settle: instead of a fixed sleep, wait until the PTY has been
 # silent for QUIET_PERIOD seconds, capped at MAX_SETTLE. Adapts to slow
@@ -89,7 +106,11 @@ def process_buffer(buffer, log_file,
                    press_enter_triggers=None):
     """Checks the tail of the rolling text buffer.
 
-    Returns (response_bytes, triggered, settle_seconds).
+    Returns (response_bytes, triggered, settle_seconds, matched_trigger).
+
+    `matched_trigger` is the exact substring that fired (used by the main
+    loop's re-arm gate so the same prompt won't fire again until its text
+    leaves the tail). Empty string when not triggered.
 
     Trigger lists default to the module-level constants. Callers can pass
     filtered copies to honour `--skip-trigger` from the command line.
@@ -98,34 +119,40 @@ def process_buffer(buffer, log_file,
     yt = y_triggers if y_triggers is not None else PROMPT_Y_TRIGGERS
     pet = press_enter_triggers if press_enter_triggers is not None else PRESS_ENTER_TRIGGERS
 
+    # Idempotent: callers in the hot path pre-normalize, but normalizing
+    # here too means tests, REPL probing, and any future caller cannot
+    # accidentally pass un-stripped input and silently miss prompts.
+    buffer = _normalize(buffer)
     tail = buffer[-TAIL_WINDOW:]
 
     # "Press Enter to..." — single-line prompts, no menu rendered.
-    if any(t in tail for t in pet):
-        if log_file:
-            log_file.write("--- TRIGGERED ENTER (press-enter) ---\n")
-            log_file.flush()
-        return b"\r", True, 0.35
+    for t in pet:
+        if t in tail:
+            if log_file:
+                log_file.write("--- TRIGGERED ENTER (press-enter) ---\n")
+                log_file.flush()
+            return b"\r", True, 0.35, t
 
     # Menu prompts — require BOTH the question phrase AND a rendered menu
     # indicator (`1.Yes`). Without the indicator, "Do you want to..." text
     # is just prose (Claude explaining something, README content, etc.).
-    if MENU_INDICATOR in tail:
+    if any(ind in tail for ind in MENU_INDICATORS):
         for trigger in et:
             if trigger in tail:
                 if log_file:
                     log_file.write("--- TRIGGERED ENTER (menu) ---\n")
                     log_file.flush()
-                return b"\r", True, 0.35
+                return b"\r", True, 0.35, trigger
 
     # Y/N prompts.
-    if any(t in tail for t in yt):
-        if log_file:
-            log_file.write("--- TRIGGERED Y ---\n")
-            log_file.flush()
-        return b"y\r", True, 0.1
+    for t in yt:
+        if t in tail:
+            if log_file:
+                log_file.write("--- TRIGGERED Y ---\n")
+                log_file.flush()
+            return b"y\r", True, 0.1, t
 
-    return None, False, 0
+    return None, False, 0, ""
 
 
 # Strips ANSI/VT control sequences. Covers:
@@ -139,6 +166,24 @@ ANSI_ESCAPE = re.compile(
     r'|\x1B\[[0-?]*[ -/]*[@-~]'
     r'|\x1B[@-Z\\-_]'
 )
+
+# Zero-width / format chars that some terminals inject between glyphs.
+# Strip so they don't break contiguous trigger matches.
+_ZERO_WIDTH = re.compile(r'[​‌‍⁠﻿]')
+
+# All Unicode whitespace (NBSP U+00A0, figure-space U+2007, NNBSP U+202F,
+# tabs, newlines, plain space, etc.). Plain `str.replace(' ', '')` only
+# catches ASCII 0x20 — Claude Code menus frequently use NBSP between
+# `1.` and `Yes`, which previously defeated the MENU_INDICATOR check.
+_WHITESPACE = re.compile(r'\s+')
+
+
+def _normalize(raw_buffer):
+    """Strip ANSI, zero-width chars, and ALL Unicode whitespace."""
+    s = ANSI_ESCAPE.sub('', raw_buffer)
+    s = _ZERO_WIDTH.sub('', s)
+    s = _WHITESPACE.sub('', s)
+    return s
 
 
 def _open_log():
@@ -240,6 +285,7 @@ def run_posix(command, opts):
             last_fire_time = 0.0
             last_fire_response = None
             last_fire_signature = None
+            cooldown_until = 0.0  # monotonic time; while now < this, skip trigger detection
 
             def settle_quiet(rb, max_wait):
                 """Wait until PTY is silent for QUIET_PERIOD or max_wait elapses.
@@ -301,9 +347,17 @@ def run_posix(command, opts):
                     # reads reassemble before regex runs.
                     raw_buffer = _trim_raw_buffer(raw_buffer + decoded)
 
-                    buffer = ANSI_ESCAPE.sub('', raw_buffer).replace(' ', '')
+                    # Post-fire cooldown: keep echoing PTY output but
+                    # skip trigger detection entirely. The buffer is
+                    # still cleared so trigger phrases left over from
+                    # the consumed prompt don't reappear after cooldown.
+                    if time.monotonic() < cooldown_until:
+                        raw_buffer = ""
+                        continue
 
-                    response, triggered, settle = process_buffer(
+                    buffer = _normalize(raw_buffer)
+
+                    response, triggered, settle, matched = process_buffer(
                         buffer, log_file,
                         enter_triggers=opts["enter_triggers"],
                         y_triggers=opts["y_triggers"],
@@ -312,11 +366,8 @@ def run_posix(command, opts):
                     if triggered:
                         now = time.monotonic()
                         sig = _fire_signature(buffer)
-                        # Throttle on (response, signature). Same prompt
-                        # re-rendered within window → suppress. A genuinely
-                        # different prompt with the same response (e.g. two
-                        # back-to-back y/N) has a different signature and
-                        # passes through.
+                        # Signature throttle: same response, identical
+                        # buffer tail within window → redraw spam.
                         if (response == last_fire_response and
                                 sig == last_fire_signature and
                                 now - last_fire_time < THROTTLE_INTERVAL_S):
@@ -324,7 +375,6 @@ def run_posix(command, opts):
                                 log_file.write("--- THROTTLED ---\n")
                                 log_file.flush()
                             raw_buffer = ""
-                            buffer = ""
                             continue
                         # Quiescence settle — wait for the menu / preview
                         # to finish painting before sending the keypress.
@@ -344,6 +394,7 @@ def run_posix(command, opts):
                         last_fire_time = time.monotonic()
                         last_fire_response = response
                         last_fire_signature = sig
+                        cooldown_until = last_fire_time + POST_FIRE_COOLDOWN_S
                         raw_buffer = ""
                         buffer = ""
 
@@ -400,6 +451,7 @@ def run_windows(command, opts):
         last_fire_time = 0.0
         last_fire_response = None
         last_fire_signature = None
+        cooldown_until = 0.0
         while True:
             try:
                 char = child.read_nonblocking(size=1, timeout=None)
@@ -412,9 +464,14 @@ def run_windows(command, opts):
                     decoded = char
 
                 raw_buffer = _trim_raw_buffer(raw_buffer + decoded)
-                buffer = ANSI_ESCAPE.sub('', raw_buffer).replace(' ', '')
 
-                response, triggered, settle = process_buffer(
+                if time.monotonic() < cooldown_until:
+                    raw_buffer = ""
+                    continue
+
+                buffer = _normalize(raw_buffer)
+
+                response, triggered, settle, _matched = process_buffer(
                     buffer, None,
                     enter_triggers=opts["enter_triggers"],
                     y_triggers=opts["y_triggers"],
@@ -439,6 +496,7 @@ def run_windows(command, opts):
                     last_fire_time = time.monotonic()
                     last_fire_response = response
                     last_fire_signature = sig
+                    cooldown_until = last_fire_time + POST_FIRE_COOLDOWN_S
                     raw_buffer = ""
             except wexpect.EOF:
                 break

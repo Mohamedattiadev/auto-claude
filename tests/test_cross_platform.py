@@ -48,7 +48,7 @@ def check(label, raw_text, expected_action):
     clean = ansi_escape.sub('', raw_text)
     buf = clean.replace(' ', '')
 
-    response, triggered, _ = process_buffer(buf, None)
+    response, triggered, _, _ = process_buffer(buf, None)
 
     if expected_action == 'y':
         ok = triggered and response == b'y\r'
@@ -181,7 +181,7 @@ def run_tests():
     import re
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     buf = (ansi_escape.sub('', chunk1) + ansi_escape.sub('', chunk2)).replace(' ', '')
-    r, triggered, _ = process_buffer(buf, None)
+    r, triggered, _, _ = process_buffer(buf, None)
     ok = triggered and r == b'\r'
     status = "\033[32m[PASS]\033[0m" if ok else "\033[31m[FAIL]\033[0m"
     print(f"{status} 49 Prompt split across two chunks")
@@ -191,7 +191,7 @@ def run_tests():
     chunk1 = "Approve?"
     chunk2 = "\x1b[1C[y/N]"
     buf = (ansi_escape.sub('', chunk1) + ansi_escape.sub('', chunk2)).replace(' ', '')
-    r, triggered, _ = process_buffer(buf, None)
+    r, triggered, _, _ = process_buffer(buf, None)
     ok = triggered and r == b'y\r'
     status = "\033[32m[PASS]\033[0m" if ok else "\033[31m[FAIL]\033[0m"
     print(f"{status} 50 [y/N] split across two chunks")
@@ -326,7 +326,7 @@ def run_tests():
     # process_buffer with custom enter_triggers — skipping "Overwrite?" silences it
     buf = "Overwrite?\r\n❯ 1. Yes\r\n  2. No".replace(" ", "")
     custom_et = [t for t in PROMPT_ENTER_TRIGGERS if t != "Overwrite?"]
-    r, trig, _ = process_buffer(buf, None, enter_triggers=custom_et)
+    r, trig, _, _ = process_buffer(buf, None, enter_triggers=custom_et)
     ok = not trig
     print(f"{'\033[32m[PASS]\033[0m' if ok else '\033[31m[FAIL]\033[0m'} A6 skipping 'Overwrite?' silences it")
     PASS += 1 if ok else 0; FAIL += 0 if ok else 1

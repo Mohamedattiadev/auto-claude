@@ -30,31 +30,41 @@ def main():
     received = []
     for step in script:
         prompt = step["prompt"]
+        redraws = step.get("redraws", 1)
+        redraw_gap = step.get("redraw_gap", 0.05)
         sys.stdout.write(prompt)
         sys.stdout.write("\r\n")
         sys.stdout.flush()
+        # Simulate Claude redrawing the same prompt repeatedly during
+        # response lag. Cooldown must collapse these into a single fire.
+        for _ in range(redraws - 1):
+            time.sleep(redraw_gap)
+            sys.stdout.write(prompt)
+            sys.stdout.write("\r\n")
+            sys.stdout.flush()
 
-        # Wait up to 3 s for a response. Stop early on CR/LF — that's
-        # how both b"y\r" and b"\r" terminate.
-        deadline = time.time() + 3.0
+        # Capture ALL keystrokes sent during the listen window — not
+        # just the first. Cascade tests need to know if a second `y`
+        # arrived mid-redraw.
+        listen_for = step.get("listen_for", 3.0)
+        deadline = time.time() + listen_for
         chars = []
         while time.time() < deadline:
             r, _, _ = select.select([sys.stdin], [], [], 0.1)
             if not r:
                 continue
             try:
-                data = os.read(sys.stdin.fileno(), 16)
+                data = os.read(sys.stdin.fileno(), 64)
             except OSError:
                 break
             if not data:
                 break
             chars.append(data.decode("utf-8", errors="replace"))
-            if b"\r" in data or b"\n" in data:
-                break
         received.append("".join(chars))
-        # Give the auto-clicker time to clear its buffer and reset the
-        # throttle window before the next prompt.
-        time.sleep(0.6)
+        # Give the auto-clicker time to clear its buffer, exit the
+        # post-fire cooldown, and reset the throttle window before the
+        # next prompt.
+        time.sleep(1.5)
 
     with open(result_path, "w") as f:
         json.dump(received, f)
