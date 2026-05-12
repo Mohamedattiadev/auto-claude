@@ -158,7 +158,8 @@ Prompts are detected even if they arrive split across multiple data chunks (a re
 - **PTY fork / exec failures** print a clear `auto: …` error instead of leaving the terminal in raw mode.
 - **`SIGWINCH` during `select`** is retried instead of bubbling up as `InterruptedError`.
 - **Debug log** lives at `~/.cache/claude_auto/claude_auto.log` (mode `0600`, `O_NOFOLLOW`) instead of a world-readable path in `/tmp`.
-- **Post-fire cooldown** — after firing, the trigger detector is silenced for 1.2 s while PTY output continues to drain. This kills the `❯ y ❯ y ❯ y` cascade where Claude redraws a prompt repeatedly during response lag and each redraw would otherwise re-fire `y`.
+- **Post-fire cooldown** — after firing, the trigger detector is silenced for 1.2 s while PTY output continues to drain. Kills the `❯ y ❯ y ❯ y` cascade where Claude redraws a prompt repeatedly during response lag and each redraw would otherwise re-fire `y`.
+- **Re-arm gate** — once cooldown lapses, same-response fires stay suppressed until the exact `question + trigger` substring (the 80 chars before the trigger plus the trigger itself) has fallen out of the buffer tail. Survives lag windows longer than the cooldown: if Claude takes 5 s to consume the keypress and keeps redrawing the prompt, only one `y` is fired. A 30 s safety ceiling rearms anyway to avoid hangs. Distinct prompts with different wording rearm immediately.
 - **Signature-aware throttle** — identical fires within 1.5 s are also suppressed using a `(response, hash(tail))` key, layered on top of the cooldown as a second guard against terminal redraws. Two genuinely different prompts that happen to share the same response (e.g. two back-to-back `[y/N]`) are not suppressed once the cooldown lapses.
 - **Quiescence settle** — instead of a fixed sleep, the clicker waits until the PTY has been silent for 120 ms (capped at 600 ms) before sending the keypress, so slow-rendering menus finish painting first and the highlighted default doesn't shift mid-fire.
 - **Dry-run mode** — `auto --dry-run claude` logs every fire to stderr without writing to the PTY, useful for verifying detection on an unfamiliar Claude version.
@@ -210,7 +211,7 @@ python3 install.py --uninstall
 
 ## Test results
 
-The project ships with a 195-test suite — 89 cross-platform prompt-detection tests, 83 internal-helper tests (ANSI strip, UTF-8 split, raw-buffer trim, arg parsing, fire signature, tail window, log file security, Unicode-whitespace normalization, fuzz with random/ANSI garbage, trigger-list integrity), and 23 real-PTY integration tests (including post-fire-cooldown cascade collapse).
+The project ships with a 196-test suite — 89 cross-platform prompt-detection tests, 83 internal-helper tests (ANSI strip, UTF-8 split, raw-buffer trim, arg parsing, fire signature, tail window, log file security, Unicode-whitespace normalization, fuzz with random/ANSI garbage, trigger-list integrity), and 24 real-PTY integration tests (including post-fire-cooldown cascade collapse and long-lag persistent-prompt re-arm gate).
 
 ### Cross-platform unit tests (`tests/test_cross_platform.py`)
 Runs on **any OS** — no PTY required.
@@ -408,7 +409,7 @@ auto-claude/
 └── tests/
     ├── test_cross_platform.py        # 89 prompt-detection tests — runs on any OS
     ├── test_internals.py             # 70 helper tests — ANSI/UTF-8/fuzz/security
-    ├── test_pty_integration.py       # 23 real-PTY end-to-end tests (POSIX)
+    ├── test_pty_integration.py       # 24 real-PTY end-to-end tests (POSIX)
     ├── _mock_target.py               # Helper used by integration tests
     ├── mock_claude_comprehensive.py  # Legacy interactive PTY harness
     └── mock_claude.py                # Simple mock for manual testing
