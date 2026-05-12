@@ -5,7 +5,7 @@ import time
 import re
 import codecs
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 # Universal triggers — spaces are stripped from buffer to defeat CLI cursor-jump formatting.
 #
@@ -80,14 +80,38 @@ THROTTLE_SIG_LEN = 200
 
 # Post-fire cooldown. After firing, we keep draining PTY output (so the
 # user still sees everything) but skip the trigger detector entirely.
-# This is the single robust guard against the `❯ y ❯ y ❯ y` cascade:
-# during Claude's response lag, the prompt phrase can remain visible
-# while the target hasn't yet consumed our keypress — without a cooldown,
-# every redraw re-fires `y`, and Claude Code echoes each one as literal
-# input. 1.2 s comfortably exceeds Claude Code's prompt-consumption
-# latency while staying short enough that real consecutive prompts
-# (issued by the same agent in a row) fire promptly.
+# Combined with the re-arm gate below this is the guard against the
+# `❯ y ❯ y ❯ y` cascade: during Claude's response lag, the prompt phrase
+# can remain visible while the target hasn't yet consumed our keypress —
+# without a cooldown, every redraw re-fires `y`, and Claude Code echoes
+# each one as literal input.
 POST_FIRE_COOLDOWN_S = 1.2
+
+# Re-arm gate. After the cooldown expires, we additionally require that
+# the exact trigger phrase that fired must have been ABSENT from the
+# normalized buffer tail at least once before we allow another fire of
+# the same response. Reasoning:
+#   * Cooldown alone is a fixed window — if Claude takes longer than
+#     1.2 s to consume our keypress (large diff, network hiccup), the
+#     prompt is still visible when cooldown lapses and we'd fire again.
+#   * Once Claude HAS consumed the keypress, the prompt text scrolls up
+#     out of TAIL_WINDOW or is overwritten, so its absence is a reliable
+#     "OK to act again" signal.
+#   * For two back-to-back prompts that happen to share the same trigger
+#     string (e.g. two `[y/N]` in a row), the gap between them lets the
+#     first one's text scroll past TAIL_WINDOW, so the gate naturally
+#     re-arms.
+# Hard ceiling: if the phrase never leaves the tail within REARM_MAX_S,
+# rearm anyway — better to risk one extra keypress than hang the user.
+REARM_MAX_S = 30.0
+
+# Minimum normalized-buffer length before "trigger phrase absent" is
+# considered a real signal. An empty buffer naturally has no triggers,
+# but between PTY chunks the buffer can be empty for unrelated reasons
+# (silence gaps, our own raw_buffer reset). Requiring substantive
+# content prevents a silence gap from falsely re-arming the detector
+# and letting the next redraw fire a second `y`.
+REARM_MIN_BUF_LEN = 8
 
 # Quiescence settle: instead of a fixed sleep, wait until the PTY has been
 # silent for QUIET_PERIOD seconds, capped at MAX_SETTLE. Adapts to slow
@@ -98,6 +122,30 @@ MAX_SETTLE_S = 0.6
 
 def _fire_signature(buffer):
     return hash(buffer[-THROTTLE_SIG_LEN:])
+
+
+STABLE_QUESTION_LEN = 80
+
+
+def _question_signature(buffer, trigger):
+    """Extract the up-to-STABLE_QUESTION_LEN normalized chars immediately
+    BEFORE the LAST occurrence of `trigger` in `buffer`. This is the
+    "question wording" that distinguishes prompts. Same prompt redrawn
+    has the same question text; different prompts have different
+    question text. Returns "" if trigger not found.
+
+    We intentionally don't hash here — caller uses raw-string match so
+    that even when redraws stack in the buffer (`Continue?[y/N]Continue?[y/N]…`),
+    we can still recognise it as the same prompt by checking whether the
+    `question + trigger` sub-string appears at all.
+    """
+    if not trigger:
+        return ""
+    idx = buffer.rfind(trigger)
+    if idx < 0:
+        return ""
+    start = max(0, idx - STABLE_QUESTION_LEN)
+    return buffer[start:idx]
 
 
 def process_buffer(buffer, log_file,
@@ -285,7 +333,10 @@ def run_posix(command, opts):
             last_fire_time = 0.0
             last_fire_response = None
             last_fire_signature = None
+            last_fire_trigger = ""
+            last_fire_question = ""
             cooldown_until = 0.0  # monotonic time; while now < this, skip trigger detection
+            armed = True  # False after fire until trigger phrase observed absent
 
             def settle_quiet(rb, max_wait):
                 """Wait until PTY is silent for QUIET_PERIOD or max_wait elapses.
@@ -347,15 +398,41 @@ def run_posix(command, opts):
                     # reads reassemble before regex runs.
                     raw_buffer = _trim_raw_buffer(raw_buffer + decoded)
 
-                    # Post-fire cooldown: keep echoing PTY output but
-                    # skip trigger detection entirely. The buffer is
-                    # still cleared so trigger phrases left over from
-                    # the consumed prompt don't reappear after cooldown.
+                    buffer = _normalize(raw_buffer)
+
+                    # Re-arm logic. We allow another fire of the same
+                    # response only when ONE of:
+                    #   (a) the matched trigger phrase has fallen out
+                    #       of the substantive buffer (prompt consumed),
+                    #   (b) the stable prompt signature (text BEFORE
+                    #       the trigger) differs from the last fire —
+                    #       this means it's a new prompt with different
+                    #       question wording, not a redraw,
+                    #   (c) REARM_MAX_S has elapsed as a safety ceiling.
+                    if not armed and last_fire_trigger:
+                        tail = buffer[-TAIL_WINDOW:]
+                        same_prompt_present = (
+                            last_fire_question + last_fire_trigger) in tail
+                        substantive = len(tail) >= REARM_MIN_BUF_LEN
+                        if substantive and not same_prompt_present:
+                            # Either trigger phrase entirely absent OR a
+                            # different question wording precedes it →
+                            # new prompt, safe to rearm.
+                            armed = True
+                            if log_file:
+                                log_file.write("--- REARMED (new context) ---\n")
+                                log_file.flush()
+                        elif time.monotonic() - last_fire_time > REARM_MAX_S:
+                            armed = True
+                            if log_file:
+                                log_file.write("--- REARMED (timeout) ---\n")
+                                log_file.flush()
+
+                    # Post-fire cooldown: skip trigger detection while
+                    # output still drains.
                     if time.monotonic() < cooldown_until:
                         raw_buffer = ""
                         continue
-
-                    buffer = _normalize(raw_buffer)
 
                     response, triggered, settle, matched = process_buffer(
                         buffer, log_file,
@@ -366,6 +443,13 @@ def run_posix(command, opts):
                     if triggered:
                         now = time.monotonic()
                         sig = _fire_signature(buffer)
+                        # Un-armed + same response: suppress (prompt that
+                        # we already responded to is still on screen).
+                        if not armed and response == last_fire_response:
+                            if log_file:
+                                log_file.write("--- SUPPRESSED (unarmed) ---\n")
+                                log_file.flush()
+                            continue
                         # Signature throttle: same response, identical
                         # buffer tail within window → redraw spam.
                         if (response == last_fire_response and
@@ -394,7 +478,11 @@ def run_posix(command, opts):
                         last_fire_time = time.monotonic()
                         last_fire_response = response
                         last_fire_signature = sig
+                        last_fire_trigger = matched
+                        last_fire_question = _question_signature(
+                            buffer, matched)
                         cooldown_until = last_fire_time + POST_FIRE_COOLDOWN_S
+                        armed = False
                         raw_buffer = ""
                         buffer = ""
 
@@ -451,7 +539,10 @@ def run_windows(command, opts):
         last_fire_time = 0.0
         last_fire_response = None
         last_fire_signature = None
+        last_fire_trigger = ""
+        last_fire_question = ""
         cooldown_until = 0.0
+        armed = True
         while True:
             try:
                 char = child.read_nonblocking(size=1, timeout=None)
@@ -464,14 +555,22 @@ def run_windows(command, opts):
                     decoded = char
 
                 raw_buffer = _trim_raw_buffer(raw_buffer + decoded)
+                buffer = _normalize(raw_buffer)
+
+                if not armed and last_fire_trigger:
+                    tail = buffer[-TAIL_WINDOW:]
+                    same_prompt_present = (
+                        last_fire_question + last_fire_trigger) in tail
+                    if len(tail) >= REARM_MIN_BUF_LEN and not same_prompt_present:
+                        armed = True
+                    elif time.monotonic() - last_fire_time > REARM_MAX_S:
+                        armed = True
 
                 if time.monotonic() < cooldown_until:
                     raw_buffer = ""
                     continue
 
-                buffer = _normalize(raw_buffer)
-
-                response, triggered, settle, _matched = process_buffer(
+                response, triggered, settle, matched = process_buffer(
                     buffer, None,
                     enter_triggers=opts["enter_triggers"],
                     y_triggers=opts["y_triggers"],
@@ -480,6 +579,8 @@ def run_windows(command, opts):
                 if triggered:
                     now = time.monotonic()
                     sig = _fire_signature(buffer)
+                    if not armed and response == last_fire_response:
+                        continue
                     if (response == last_fire_response and
                             sig == last_fire_signature and
                             now - last_fire_time < THROTTLE_INTERVAL_S):
@@ -496,7 +597,10 @@ def run_windows(command, opts):
                     last_fire_time = time.monotonic()
                     last_fire_response = response
                     last_fire_signature = sig
+                    last_fire_trigger = matched
+                    last_fire_question = _question_signature(buffer, matched)
                     cooldown_until = last_fire_time + POST_FIRE_COOLDOWN_S
+                    armed = False
                     raw_buffer = ""
             except wexpect.EOF:
                 break

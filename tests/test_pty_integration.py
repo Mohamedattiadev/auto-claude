@@ -219,6 +219,19 @@ class TestPtyIntegration(unittest.TestCase):
         self.assertEqual(result[0].count("y"), 1,
                          f"expected 1 y, got {result[0]!r}")
 
+    def test_long_lag_persistent_prompt_does_not_refire(self):
+        # Lag scenario: cooldown lapses but prompt phrase still visible
+        # because Claude hasn't consumed our `y` yet. Re-arm gate must
+        # hold us to exactly one fire even across multiple cooldown
+        # windows.
+        result, rc = run_auto_session([
+            {"prompt": "Continue? [y/N]",
+             "redraws": 25, "redraw_gap": 0.2, "listen_for": 6.0},
+        ], timeout=20)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0].count("y"), 1,
+                         f"expected 1 y across long lag, got {result[0]!r}")
+
     def test_menu_redraw_cascade_collapses_to_single_fire(self):
         result, rc = run_auto_session([
             {"prompt": "Do you want to proceed?\r\n❯ 1. Yes\r\n  2. No",
